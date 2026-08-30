@@ -6,9 +6,9 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
- * The free on-chain Chainlink aggregator. Used two ways: the engine reads this
- * once per window to anchor Binance's price to it, and polls it separately in
- * the background purely to display the live gap between the two.
+ * The free on-chain Chainlink aggregator — the engine's fallback price source
+ * (both for the barrier and the live tape) whenever Polymarket's own live
+ * relay has nothing fresh.
  */
 export const GET = handler(async () => {
   try {

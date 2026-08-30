@@ -10,7 +10,7 @@ Every five minutes Polymarket opens a new market: will Bitcoin be higher in five
 minutes than it is right now? Vision plays one cycle per window.
 
 1. **Calibrate first.** There is no seeded history. On start, the app spends
-   `CALIBRATION_MIN_SEC` (5 minutes by default) gathering nothing but real,
+   `CALIBRATION_MIN_SEC` (1 minute by default) gathering nothing but real,
    live price ticks before it will touch a window — long enough for the
    volatility estimate behind every probability to be real rather than a
    generic placeholder. It keeps a rolling 30-minute tape after that.
@@ -20,15 +20,16 @@ minutes than it is right now? Vision plays one cycle per window.
 3. **Fetch the barrier — never guess it.** At the open, the price to beat is
    read from **Polymarket's own live relay of the Chainlink price stream**
    these markets actually settle on (see "About the price feed" below). If
-   that is unreachable it falls back to the free on-chain Chainlink read, and
-   only as a last resort to the app's own Binance-derived price — and it says
-   which one it used, in the UI and in the log.
+   that is unreachable it falls back to a fresh read of the free on-chain
+   Chainlink aggregator — never anything else — and it says which one it used,
+   in the UI and in the log. If neither answers, the window is sat out rather
+   than trading on a guess.
 4. **Run the only model there is.** A driftless Monte Carlo: `paths` random
-   walks are simulated forward from the *current* price, using the realised
-   volatility of the last 30 minutes of real ticks, for however many seconds
-   are left in the window. `P(UP)` is the share that finish above the
-   barrier. No forecast, no prior, no external opinion feeds it — recomputed
-   roughly once a second for as long as the window is open.
+   walks are simulated forward from the *current* price, using the plain
+   average realised volatility of the last 10 15-second candles, for however
+   many seconds are left in the window. `P(UP)` is the share that finish
+   above the barrier. No forecast, no prior, no external opinion feeds it —
+   recomputed roughly once a second for as long as the window is open.
 5. **Buy whichever side is worth more than it costs.** Both UP and DOWN are
    evaluated every tick: if the simulation's probability for a side beats what
    the market is charging for it by more than the configured minimum edge, it
@@ -50,29 +51,22 @@ topic: crypto_prices_chainlink
 ```
 
 The app connects to this directly from the browser (`src/lib/chainlinkFeed.ts`)
-and uses it as the primary source for the barrier — the one number the whole
-system is measured against. Behind it sit two fallbacks: the free on-chain
-Chainlink aggregator (`chainlink.ts`, much slower — it only updates on a 0.5%
-deviation or an hourly heartbeat) and, last, the app's own Binance-derived
-tape. Every window's history records which source was actually used
-(`barrierSource`), so a fallback is always visible, never silent.
-
-Second-to-second prices — the tape the volatility estimate and the live chart
-are built from — come from **Binance**, which is free, needs no key, and
-publishes real 1-second resolution. It is one exchange's tape rather than an
-oracle aggregate, so it is continuously re-anchored to whichever Chainlink
-read arrives most recently (the live relay when connected, the on-chain read
-every 30 seconds otherwise): the difference is added to every Binance price,
-past and future, so the level tracks the settlement oracle while the
-movement is Binance's real tape.
+and uses it as the primary source for **everything** — the barrier, the live
+price on screen, and the tape the volatility estimate and chart are built
+from. No other exchange's data is ever blended in. Behind it sits exactly one
+fallback: a fresh read of the free on-chain Chainlink aggregator
+(`chainlink.ts`, much slower — it only updates on a 0.5% deviation or an
+hourly heartbeat), used only when the live relay has nothing recent. Every
+window's history records which source was actually used (`barrierSource`),
+so a fallback is always visible, never silent.
 
 > This repository's sandbox has no route to `polymarket.com`, so the RTDS
 > client's protocol details (endpoint, subscribe message, ping) are taken
 > directly from Polymarket's own `real-time-data-client` source on GitHub,
 > but the connection itself has not been exercised against the live
-> endpoint. If it does not connect in your deployment, the two fallbacks mean
-> the app still runs correctly — it will just say so in Activity and use the
-> on-chain or Binance-derived barrier instead.
+> endpoint. If it does not connect in your deployment, the on-chain fallback
+> means the app still runs correctly, just slower to update — it will say so
+> in Activity.
 
 ## Setup
 
@@ -131,7 +125,6 @@ Five things, all on sliders, plus the mode:
 
 ```
 src/lib/
-  binance.ts        live price
   chainlink.ts       the on-chain fallback read
   chainlinkFeed.ts   Polymarket's live Chainlink relay (browser WebSocket)
   market.ts          finding the live 5-minute market
@@ -151,13 +144,12 @@ src/components/      the app
 npm test
 ```
 
-24 tests, no network needed. The ones that matter: at the barrier with nothing
+21 tests, no network needed. The ones that matter: at the barrier with nothing
 else known the simulation is a coin flip; being on either side of the barrier
 moves P(UP) the right way and by a symmetric amount; more volatility pulls a
 winning position back toward even; a finished window is decided, not
-simulated; a real 30-minute tape clears the fallback threshold in the
-volatility estimate; the Chainlink anchor re-levels history and live ticks by
-exactly the same amount; paper fills walk real depth and report shortfalls;
+simulated; a real 15-second tape clears the fallback threshold in the
+volatility estimate; paper fills walk real depth and report shortfalls;
 market discovery uses Polymarket's deterministic slug grid rather than a
 text search, with a case that reproduces a real bug (a market whose own date
 fields would have produced the wrong window).
@@ -166,11 +158,9 @@ fields would have produced the wrong window).
 
 - **The tab must stay open.** The loop runs in the browser. Closing it stops
   trading, which is the safer default anyway.
-- **The RTDS connection is unverified**, per the caveat above. It degrades
-  safely if it doesn't work in your environment.
-- **Binance is a proxy** for the parts of the tape the settlement oracle
-  cannot supply fast enough — the volatility estimate, the chart. See "About
-  the price feed."
+- **The RTDS connection is unverified**, per the caveat above. If it never
+  connects in your deployment, the tape only updates every 30 seconds (the
+  on-chain fallback's poll interval) instead of continuously.
 - **Paper settlement uses the app's own live price**, so it can disagree with
   the on-chain result at the boundary on a very close window.
 - **The edge may not exist.** A five-minute Bitcoin binary is close to a coin

@@ -7,11 +7,9 @@ import { fetchJson } from './http';
  * The free on-chain Chainlink BTC/USD aggregator. This is NOT the Data Stream
  * Polymarket actually settles on — that needs commercial credentials — and it
  * updates far too slowly to drive a decision on its own (a 0.5% deviation or an
- * hourly heartbeat). But it is a genuine oracle read, so it is used once per
- * window: at the open, to anchor the Binance-derived price to it (see
- * `Engine.computeOffset` in `engine.ts`), and continuously in the background,
- * to show the live gap between the two so a divergence is visible rather than
- * silent.
+ * hourly heartbeat). But it is a genuine oracle read, so it is the fallback
+ * whenever Polymarket's own live relay (see `chainlinkFeed.ts`) has nothing
+ * fresh — both for the barrier and for the live price tape.
  */
 
 const LATEST_ROUND = '0xfeaf968c';

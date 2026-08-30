@@ -14,7 +14,7 @@ import type {
   WindowRecord,
 } from './types';
 import { CALIBRATION_MIN_SEC, DEFAULT_CONFIG, HISTORY_MIN, WINDOW_SEC } from './config';
-import { bucket, shiftBars, shiftTicks, trim, volatility } from './bars';
+import { bucket, trim, volatility } from './bars';
 import { quote } from './book';
 import { simulate } from './montecarlo';
 import { ChainlinkFeed } from './chainlinkFeed';
@@ -76,7 +76,6 @@ export interface Snapshot {
   feedError: string | null;
   price: number | null;
   priceAt: number;
-  chainlinkGap: number | null;
   /** Whether Polymarket's own live Chainlink relay is currently connected. */
   chainlinkLive: boolean;
   ticks: Tick[];
@@ -105,12 +104,7 @@ export class Engine {
   private ticks: Tick[] = [];
   private bars: Bar[] = [];
   private price: number | null = null;
-  /** Last raw Binance read, before the Chainlink anchor offset is applied. */
-  private rawPrice: number | null = null;
-  /** Added to every Binance price. Re-levelled whenever a fresh Chainlink read arrives. */
-  private offset = 0;
   private priceAt = 0;
-  private chainlinkGap: number | null = null;
   private chainlinkLive = false;
   private feedError: string | null = null;
   private vol = { sigma: 0, volPct: 0 };
@@ -137,7 +131,7 @@ export class Engine {
   constructor(private headers: () => Record<string, string>) {
     this.chainlinkFeed = new ChainlinkFeed({
       onTick: (tick) => {
-        this.applyChainlinkAnchor(tick.p);
+        this.ingestTick(tick);
         this.emit();
       },
       onStatus: (connected) => {
@@ -170,9 +164,9 @@ export class Engine {
     );
 
     this.chainlinkFeed.start();
-    await this.poll();
+    await this.pollChainlink(); // get a genuine price on the board immediately, don't wait on the live relay to connect
 
-    this.timers.push(setInterval(() => void this.poll(), 1000));
+    this.timers.push(setInterval(() => this.emit(), 1000)); // ticks the countdowns; prices arrive via ingestTick, not a poll
     this.timers.push(setInterval(() => void this.pollMarket(), 3000));
     this.timers.push(setInterval(() => this.step(), 250));
     this.timers.push(setInterval(() => void this.pollChainlink(), 30_000));
@@ -256,11 +250,12 @@ export class Engine {
     return {
       running: this.running,
       config: this.config,
-      connected: this.price !== null && now - this.priceAt < 8000,
+      // The live relay ticks whenever Chainlink publishes; the on-chain fallback only
+      // every 30s. 40s covers a missed on-chain poll without flapping to "offline".
+      connected: this.chainlinkLive || (this.price !== null && now - this.priceAt < 40_000),
       feedError: this.feedError,
       price: this.price,
       priceAt: this.priceAt,
-      chainlinkGap: this.chainlinkGap,
       chainlinkLive: this.chainlinkLive,
       ticks: this.ticks.slice(-400),
       volPct: this.vol.volPct || null,
@@ -281,83 +276,53 @@ export class Engine {
 
   // ── Price ─────────────────────────────────────────────────────────────────
 
-  /** One price read per second. Bars and the rolling 30-minute tape are built from this alone. */
-  private async poll(): Promise<void> {
-    if (!this.running) return;
-    try {
-      const res = await fetch('/api/price', { headers: this.headers(), cache: 'no-store' });
-      if (!res.ok) throw new Error(`price ${res.status}`);
-      const tick = (await res.json()) as Tick;
-      if (!(tick.p > 0)) throw new Error('bad price');
+  /**
+   * Fold one genuine Chainlink price observation into the tape — the only
+   * way `this.price`, `this.ticks` and `this.bars` are ever updated. There
+   * is no other exchange's data blended in anywhere: every number on screen
+   * and every number the simulation trades on is Chainlink, the same asset
+   * Polymarket itself settles these markets against.
+   */
+  private ingestTick(tick: Tick): void {
+    if (!(tick.p > 0)) return;
+    this.price = tick.p;
+    this.priceAt = tick.t;
+    this.feedError = null;
+    this.ticks.push(tick);
+    if (this.ticks.length > MAX_TICKS) this.ticks = this.ticks.slice(-MAX_TICKS);
 
-      this.rawPrice = tick.p;
-      const p = tick.p + this.offset;
-      this.price = p;
-      this.priceAt = Date.now();
-      this.feedError = null;
-      this.ticks.push({ t: this.priceAt, p });
-      if (this.ticks.length > MAX_TICKS) this.ticks = this.ticks.slice(-MAX_TICKS);
+    const b = bucket(tick.t);
+    const last = this.bars[this.bars.length - 1];
+    if (last && last.t === b) last.c = tick.p;
+    else if (!last || b > last.t) this.bars.push({ t: b, c: tick.p });
 
-      // Fold into the current 10-second bar.
-      const b = bucket(this.priceAt);
-      const last = this.bars[this.bars.length - 1];
-      if (last && last.t === b) last.c = p;
-      else if (!last || b > last.t) this.bars.push({ t: b, c: p });
-
-      // Keep only the trailing window — the tape is built purely from what has
-      // actually been observed, so it grows toward this width rather than
-      // starting there.
-      this.bars = trim(this.bars, HISTORY_MIN, this.priceAt);
-      this.vol = volatility(this.bars);
-      this.emit();
-    } catch (err) {
-      this.feedError = msg(err);
-      this.emit();
-    }
+    // Keep only the trailing window — the tape is built purely from what has
+    // actually been observed, so it grows toward this width rather than
+    // starting there.
+    this.bars = trim(this.bars, HISTORY_MIN, tick.t);
+    this.vol = volatility(this.bars);
   }
 
   /**
    * Runs every 30 seconds, market open or not — the free on-chain Chainlink
-   * aggregator, purely as a backup anchor and a display cross-check for
-   * `Engine.chainlinkFeed`, which updates far more often. Most of these polls
-   * are a no-op: the on-chain answer itself only moves on a 0.5% deviation or
-   * an hourly heartbeat.
+   * aggregator. Only actually folded into the tape when the live relay
+   * doesn't have anything fresher: it is a genuine oracle read but a slow
+   * one (a 0.5% deviation or an hourly heartbeat), so letting it overwrite a
+   * live relay tick would make the tape worse, not better.
    */
   private async pollChainlink(): Promise<void> {
     if (!this.running) return;
     try {
       const res = await fetch('/api/chainlink', { headers: this.headers(), cache: 'no-store' });
-      if (!res.ok) return;
+      if (!res.ok) throw new Error(`chainlink ${res.status}`);
       const d = (await res.json()) as { price?: number | null };
-      this.chainlinkGap = d.price && this.price ? this.price - d.price : null;
-      if (d.price) this.applyChainlinkAnchor(d.price);
+      if (!d.price) throw new Error('no chainlink price');
+      if (!this.chainlinkFeed.latest()) this.ingestTick({ t: Date.now(), p: d.price });
       this.emit();
-    } catch {
-      /* advisory only */
+    } catch (err) {
+      if (this.price === null) this.feedError = msg(err);
+      this.emit();
     }
-  }
-
-  /**
-   * Re-level Binance to a Chainlink read, from whichever source produced it —
-   * Polymarket's live relay (most of the time) or the on-chain fallback.
-   * Binance is one exchange's tape; Chainlink's answer is a genuine
-   * independent read of the same asset. The difference against the current
-   * raw Binance price is added to every Binance number: past (the bars and
-   * ticks already on the tape) and future (every price from here on, via
-   * `offset`). The second-to-second movement is still Binance's real tape,
-   * which is the only source here that updates fast enough to be worth
-   * polling every second.
-   */
-  private applyChainlinkAnchor(chainlinkPrice: number): void {
-    if (this.rawPrice === null) return;
-    const nextOffset = chainlinkPrice - this.rawPrice;
-    const delta = nextOffset - this.offset;
-    if (Math.abs(delta) < 0.005) return; // no meaningful change to apply
-
-    this.offset = nextOffset;
-    if (this.price !== null) this.price += delta;
-    this.bars = shiftBars(this.bars, delta);
-    this.ticks = shiftTicks(this.ticks, delta);
   }
 
   // ── Market ────────────────────────────────────────────────────────────────
@@ -474,8 +439,8 @@ export class Engine {
 
   /**
    * The price to beat — the exact number Polymarket itself is using, never
-   * approximated from our own Binance-derived tape. Only two sources ever
-   * answer this, both genuine reads of the real asset:
+   * approximated from anything else. Only two sources ever answer this,
+   * both genuine reads of the real asset:
    *
    *   1. Polymarket's own live relay of the Chainlink Data Streams feed
    *      these markets actually settle on, if a tick has landed in the last
@@ -513,8 +478,6 @@ export class Engine {
     const now = Date.now();
     this.lastSimAt = now;
     const remaining = Math.max(0, (m.endMs - now) / 1000);
-
-    this.vol = volatility(this.bars);
 
     const sim = simulate({
       barrier: c.barrier,
@@ -696,7 +659,7 @@ export class Engine {
       startMs: m.startMs,
       endMs: m.endMs,
       barrier: c.barrier,
-      barrierSource: c.barrierSource ?? 'binance',
+      barrierSource: c.barrierSource ?? 'polymarket-onchain',
       close,
       outcome,
       finalPUp: c.sim?.pUp ?? null,
@@ -813,9 +776,7 @@ function idleCycle(phase: Phase): Cycle {
 }
 
 function barrierSourceLabel(s: BarrierSource): string {
-  if (s === 'polymarket-live') return "Polymarket's live Chainlink relay";
-  if (s === 'polymarket-onchain') return 'on-chain Chainlink, fallback';
-  return 'Binance, fallback — Chainlink unavailable';
+  return s === 'polymarket-live' ? "Polymarket's live Chainlink relay" : 'on-chain Chainlink, fallback';
 }
 
 function msg(e: unknown): string {

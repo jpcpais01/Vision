@@ -3,18 +3,6 @@ import { BAR_SEC } from './config';
 
 const BAR_MS = BAR_SEC * 1000;
 
-/** Shift every close by `delta`. Used to re-level the tape when the Chainlink
- *  anchor offset changes, so history and live ticks stay on one basis. */
-export function shiftBars(bars: Bar[], delta: number): Bar[] {
-  if (delta === 0) return bars;
-  return bars.map((b) => ({ ...b, c: b.c + delta }));
-}
-
-export function shiftTicks(ticks: Tick[], delta: number): Tick[] {
-  if (delta === 0) return ticks;
-  return ticks.map((t) => ({ ...t, p: t.p + delta }));
-}
-
 export function bucket(t: number): number {
   return Math.floor(t / BAR_MS) * BAR_MS;
 }

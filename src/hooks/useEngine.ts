@@ -163,7 +163,6 @@ const EMPTY: Snapshot = {
   feedError: null,
   price: null,
   priceAt: 0,
-  chainlinkGap: null,
   chainlinkLive: false,
   ticks: [],
   volPct: null,

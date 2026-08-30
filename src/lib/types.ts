@@ -12,9 +12,9 @@ export interface Tick {
   p: number; // USD
 }
 
-/** A 10-second close. Only the close matters for what we do with it. */
+/** A BAR_SEC-second close. Only the close matters for what we do with it. */
 export interface Bar {
-  t: number; // bucket start, epoch ms, aligned to 10s
+  t: number; // bucket start, epoch ms, aligned to BAR_SEC
   c: number;
 }
 
@@ -98,8 +98,8 @@ export interface Trade {
   error?: string;
 }
 
-/** Where a captured barrier came from, most trustworthy first. */
-export type BarrierSource = 'polymarket-live' | 'polymarket-onchain' | 'binance';
+/** Where a captured barrier came from, most trustworthy first. Always a genuine Chainlink read — never approximated. */
+export type BarrierSource = 'polymarket-live' | 'polymarket-onchain';
 
 /** One completed 5-minute window, traded or not. */
 export interface WindowRecord {

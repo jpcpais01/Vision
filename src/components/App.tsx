@@ -347,8 +347,9 @@ export default function App() {
       </section>
 
       <p className="px-1 text-center text-xs leading-relaxed text-[var(--muted)]">
-        The barrier is fetched from Polymarket’s own live Chainlink relay. Live prices otherwise
-        come from Binance, continuously anchored to Chainlink. There is no forecasting model —
+        Every price on this screen is Chainlink — Polymarket’s own live relay of the same feed
+        these markets settle on, falling back to the on-chain aggregator only when the relay has
+        nothing fresh. No other exchange’s data is ever blended in. There is no forecasting model —
         only a driftless Monte Carlo over realised volatility. Paper mode simulates fills against
         the real order book. Not financial advice.
       </p>
@@ -397,9 +398,7 @@ function SideRead({
 }
 
 function barrierSourceLabel(s: BarrierSource): string {
-  if (s === 'polymarket-live') return "Polymarket's live feed";
-  if (s === 'polymarket-onchain') return 'on-chain Chainlink';
-  return 'Binance fallback';
+  return s === 'polymarket-live' ? "Polymarket's live feed" : 'on-chain Chainlink';
 }
 
 function phaseLabel(s: ReturnType<typeof useEngine>['snapshot']): string {
