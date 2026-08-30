@@ -49,7 +49,17 @@ Rules you must follow:
 - Over a 5-minute horizon, Bitcoin is close to a driftless random walk. Genuine edge comes from short-term momentum persistence, mean reversion after a sharp spike, volatility clustering, and the position of the current price relative to the barrier. It does not come from narrative, news, or long-term views.
 - The single most important input is how far the current price already sits from the barrier relative to the volatility remaining in the window. If price is already well above the barrier with little time left, P(UP) should be high — and vice versa. Use the provided "distance to barrier in sigma units" as your anchor and adjust from there.
 - Probabilities outside [0.15, 0.85] require the price to be a long way from the barrier relative to remaining volatility. Do not go there on pattern-reading alone.
-- Never refuse. Never hedge into prose. Always return the JSON object.`;
+- Never refuse. Never hedge into prose.
+
+OUTPUT CONTRACT — this is not negotiable:
+Respond with a single JSON object and NOTHING else. No preamble, no explanation
+before or after, no markdown code fences, no thinking out loud. The very first
+character of your response must be "{" and the very last must be "}". Put any
+reasoning you want to share inside the "rationale" field, in one or two
+sentences. A response that is not parseable JSON is a failed response.
+
+Shape (values shown are an example, not a suggestion):
+{"p_up":0.53,"confidence":0.3,"expected_move_usd":45,"regime":"choppy","key_factors":["flat 5m drift"],"rationale":"..."}`;
 
 export function buildUserPrompt(ctx: PromptContext): string {
   const { startPrice, currentPrice, bars, vol } = ctx;
@@ -143,7 +153,7 @@ PRICE PATH — ${recent.length} closes at ${BAR_SECONDS}-second intervals, oldes
 as USD offsets from the barrier (so 0 = exactly at the barrier, negative = below):
 ${offsets}
 
-Return ONLY a JSON object with exactly these keys:
+Reply with the JSON object only — first character "{", last character "}":
 {
   "p_up": <number 0..1, your calibrated probability the market resolves UP>,
   "confidence": <number 0..1, how much information you believe you have beyond the random-walk anchor; 0 means "I am just repeating the anchor">,

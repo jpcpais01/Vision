@@ -405,6 +405,8 @@ export interface TradingConfig {
   maxSecondsLeft: number;
   maxDataAgeMs: number;
   maxDecisionLatencyMs: number;
+  /** Total budget for the LLM call, across all retry attempts. */
+  llmTimeoutMs: number;
 
   // Sizing / risk
   bankroll: number;

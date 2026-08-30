@@ -181,13 +181,22 @@ export function ControlsPanel({
             disabled={disabled}
           />
           <NumberField
-            label="Latency budget"
+            label="Max forecast latency"
             suffix="ms"
             value={config.maxDecisionLatencyMs}
             step={500}
             onChange={set('maxDecisionLatencyMs')}
             disabled={disabled}
-            hint="Total time from forecast dispatch to order. Beyond this the forecast is too stale to act on."
+            hint="Reject a forecast that took longer than this to arrive — it was reading a stale tape by the time it answered. This bounds the model's round trip, not the age of the forecast."
+          />
+          <NumberField
+            label="LLM timeout"
+            suffix="ms"
+            value={config.llmTimeoutMs}
+            step={1000}
+            onChange={set('llmTimeoutMs')}
+            disabled={disabled}
+            hint="Total budget for the forecast across all retry attempts. Lower it to fail fast on a slow model; the window is only 300s."
           />
         </div>
       ) : null}

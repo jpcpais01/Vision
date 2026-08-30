@@ -1,7 +1,9 @@
 import { strict as assert } from 'node:assert';
 import test from 'node:test';
 import { evaluate, shrinkProbability, type PortfolioState } from '../engine/risk';
-import { DEFAULT_CONFIG, sanitizeConfig } from '../config';
+import { forecastLatencyMs } from '../engine/engine';
+import type { CycleState } from '../engine/engine';
+import { DEFAULT_CONFIG, WINDOW_SECONDS, sanitizeConfig } from '../config';
 import { bookCoherence, quoteFromBook, roundPriceDown, roundPriceUp } from '../polymarket/clob';
 import type { BtcMarket, OrderBook, TradingConfig } from '../types';
 
@@ -367,4 +369,117 @@ test('shrink is applied before sizing, so it can remove a marginal trade', () =>
   assert.equal(before.trade, true);
   assert.equal(after.trade, false);
   assert.ok(after.rejectReasons.includes('insufficient-edge'));
+});
+
+
+// ── Gate feasibility ────────────────────────────────────────────────────────
+
+/**
+ * The timing gates must admit a non-empty window, or the engine sits out every
+ * market while reporting perfectly reasonable-looking rejections.
+ *
+ * This bit us for real: `maxDecisionLatencyMs` was measured as time elapsed
+ * since the forecast was dispatched, which grows for the whole window, while
+ * `maxSecondsLeft` requires waiting before entering. With the shipped defaults
+ * the first gate demanded t <= 12s and the second demanded t >= 40s, so no
+ * trade was ever possible. The gate now bounds the forecast's own round trip,
+ * which is independent of t.
+ */
+test('the default timing gates admit a non-empty trade window', () => {
+  const c = DEFAULT_CONFIG;
+  const earliest = WINDOW_SECONDS - c.maxSecondsLeft;
+  const latest = WINDOW_SECONDS - c.minSecondsLeft;
+  assert.ok(
+    latest > earliest,
+    `min/max seconds-left leave no room: t in [${earliest}, ${latest}]`
+  );
+  assert.ok(latest - earliest >= 30, 'the window should be wide enough to be usable');
+});
+
+test('the forecast-latency gate does not depend on when in the window we act', () => {
+  // Same forecast, evaluated early and late. Only the seconds-left gates should
+  // differ; the latency gate must behave identically at both times.
+  const forecastLatencyMs = 4000;
+  const at = (elapsed: number) => {
+    const base = goodSetup();
+    return evaluate({
+      ...base,
+      market: market({ startMs: NOW - elapsed * 1000, endMs: NOW + (300 - elapsed) * 1000 }),
+      decisionLatencyMs: forecastLatencyMs,
+    });
+  };
+  for (const elapsed of [50, 120, 200, 250]) {
+    const d = at(elapsed);
+    assert.ok(
+      !d.rejectReasons.includes('latency-budget'),
+      `a ${forecastLatencyMs}ms forecast was rejected for latency at t=${elapsed}s`
+    );
+  }
+  // A genuinely slow forecast is still refused, wherever in the window we are.
+  const slow = evaluate({ ...goodSetup(), decisionLatencyMs: 60_000 });
+  assert.ok(slow.rejectReasons.includes('latency-budget'));
+});
+
+test('there is a reachable state where every gate passes at once', () => {
+  // A full end-to-end feasibility check: mid-window, fresh data, a fast
+  // forecast, a real edge, and an empty book of positions.
+  const c = DEFAULT_CONFIG;
+  const elapsed = WINDOW_SECONDS - (c.minSecondsLeft + c.maxSecondsLeft) / 2;
+  const d = evaluate({
+    ...goodSetup(),
+    market: market({ startMs: NOW - elapsed * 1000, endMs: NOW + (300 - elapsed) * 1000 }),
+    dataAgeMs: c.maxDataAgeMs / 2,
+    decisionLatencyMs: c.maxDecisionLatencyMs / 2,
+  });
+  assert.equal(
+    d.trade,
+    true,
+    `no reachable trade under default gates: ${d.rejectReasons.join(', ')}`
+  );
+});
+
+
+test('forecast latency is the model round trip, not the age of the forecast', () => {
+  const dispatched = NOW - 200_000; // forecast sent 200s ago
+  const cycle = {
+    llm: { latencyMs: 3200 },
+    llmDispatchedAt: dispatched,
+  } as unknown as CycleState;
+
+  // The forecast is 200 seconds old, but it only took 3.2s to produce. The gate
+  // must see 3.2s — anything else makes it fight `maxSecondsLeft` and the
+  // engine never trades.
+  assert.equal(forecastLatencyMs(cycle, NOW), 3200);
+  assert.ok(
+    forecastLatencyMs(cycle, NOW) < DEFAULT_CONFIG.maxDecisionLatencyMs,
+    'a fast forecast must stay tradeable however late in the window we act'
+  );
+
+  // Still in flight: report the wait so far, which is what the UI counts up.
+  const pending = { llm: null, llmDispatchedAt: NOW - 4000 } as unknown as CycleState;
+  assert.equal(forecastLatencyMs(pending, NOW), 4000);
+
+  const idle = { llm: null, llmDispatchedAt: null } as unknown as CycleState;
+  assert.equal(forecastLatencyMs(idle, NOW), 0);
+});
+
+test('a fast forecast stays tradeable at every point in the allowed window', () => {
+  // End-to-end feasibility using the engine's own latency rule rather than a
+  // hand-passed number — this is the exact combination that used to deadlock.
+  const c = DEFAULT_CONFIG;
+  const cycle = { llm: { latencyMs: 3500 }, llmDispatchedAt: NOW - 250_000 } as unknown as CycleState;
+
+  let tradeable = 0;
+  for (let elapsed = WINDOW_SECONDS - c.maxSecondsLeft; elapsed <= WINDOW_SECONDS - c.minSecondsLeft; elapsed += 10) {
+    const now = NOW;
+    const d = evaluate({
+      ...goodSetup(),
+      market: market({ startMs: now - elapsed * 1000, endMs: now + (WINDOW_SECONDS - elapsed) * 1000 }),
+      nowMs: now,
+      dataAgeMs: 500,
+      decisionLatencyMs: forecastLatencyMs(cycle, now),
+    });
+    if (d.trade) tradeable++;
+  }
+  assert.ok(tradeable > 15, `only ${tradeable} tradeable moments across the allowed window`);
 });

@@ -8,8 +8,9 @@ import type { Bar, ChainlinkSnapshot, PriceSourceName } from '@/lib/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-// The model has a hard 25s budget; give the function headroom above it.
-export const maxDuration = 45;
+// The client-supplied budget is clamped below this, so the model always fails
+// cleanly on its own deadline rather than being cut off by the platform.
+export const maxDuration = 60;
 
 interface ForecastBody {
   startPrice: number;
@@ -21,6 +22,7 @@ interface ForecastBody {
   historyMinutes?: number;
   source?: PriceSourceName;
   ewmaLambda?: number;
+  llmTimeoutMs?: number;
 }
 
 /**
@@ -98,7 +100,8 @@ export const POST = handler(async (req) => {
         model: env.openrouterModel(),
         siteUrl: env.openrouterSiteUrl(),
         siteName: env.openrouterSiteName(),
-        timeoutMs: 25_000,
+        baseUrl: env.openrouterBaseUrl(),
+        timeoutMs: clampInt(body.llmTimeoutMs ?? 20_000, 5000, 50_000),
       }
     );
 

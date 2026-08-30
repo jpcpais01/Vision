@@ -22,6 +22,8 @@ export const env = {
   // LLM
   openrouterKey: () => str('OPENROUTER_API_KEY'),
   openrouterModel: () => str('OPENROUTER_MODEL', 'deepseek/deepseek-v4-flash-0731'),
+  openrouterBaseUrl: () =>
+    str('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1/chat/completions'),
   openrouterSiteUrl: () => str('OPENROUTER_SITE_URL'),
   openrouterSiteName: () => str('OPENROUTER_SITE_NAME', 'Vision BTC 5m'),
 

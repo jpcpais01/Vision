@@ -76,7 +76,7 @@ export function DecisionPanel({
           detail: `${ms(decision.dataAgeMs)} vs ${ms(config.maxDataAgeMs)} max`,
         },
         {
-          label: 'Decision latency',
+          label: 'Forecast latency',
           ok:
             cycle.decisionLatencyMs === null ||
             cycle.decisionLatencyMs <= config.maxDecisionLatencyMs,

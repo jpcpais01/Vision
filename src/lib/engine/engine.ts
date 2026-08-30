@@ -628,6 +628,7 @@ export class TradingEngine {
           historyMinutes: this.config.historyMinutes,
           source: this.config.priceSource,
           ewmaLambda: this.config.ewmaLambda,
+          llmTimeoutMs: this.config.llmTimeoutMs,
         }),
       });
 
@@ -792,8 +793,7 @@ export class TradingEngine {
     const bookAge = bookTimes.length > 0 ? now - Math.min(...bookTimes) : Number.POSITIVE_INFINITY;
     const dataAge = Math.max(tickAge, bookAge);
 
-    const decisionLatency =
-      c.llmDispatchedAt !== null ? now - c.llmDispatchedAt : 0;
+    const decisionLatency = forecastLatencyMs(c, now);
 
     const decision = evaluate({
       config: this.config,
@@ -1136,6 +1136,30 @@ export class TradingEngine {
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * How long the forecast took to arrive — NOT how long ago it was dispatched.
+ *
+ * This distinction is the difference between a working engine and one that
+ * never trades. The premise of the design is that the simulation re-conditions
+ * on every tick, so a forecast being a minute old is expected and fine; what is
+ * not fine is acting on one the model took 40 seconds to produce, because its
+ * view of the tape was already stale when it landed.
+ *
+ * Measured as elapsed-since-dispatch instead, this value grows for the whole
+ * window, which makes the latency gate mutually exclusive with `maxSecondsLeft`
+ * — the first demands we act early, the second demands we wait — and no trade
+ * is ever possible. That was a real shipped bug; `gateFeasibility` in the tests
+ * guards against it returning.
+ *
+ * While the forecast is still in flight it reports the wait so far, which is
+ * what the UI counts up.
+ */
+export function forecastLatencyMs(cycle: CycleState, now: number): number {
+  if (cycle.llm) return cycle.llm.latencyMs;
+  if (cycle.llmDispatchedAt !== null) return now - cycle.llmDispatchedAt;
+  return 0;
+}
 
 function emptyCycle(): CycleState {
   return {

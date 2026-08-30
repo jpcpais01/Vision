@@ -26,7 +26,12 @@ export const DEFAULT_CONFIG: TradingConfig = {
   minSecondsLeft: 45,
   maxSecondsLeft: 260,
   maxDataAgeMs: 4000,
-  maxDecisionLatencyMs: 12000,
+  // Maximum acceptable *round trip* for the forecast. A model that took longer
+  // than this was reading a stale tape by the time it answered, so the window
+  // is observed but not traded. Sits below llmTimeoutMs on purpose: the request
+  // is allowed to complete, and is then judged on how long it took.
+  maxDecisionLatencyMs: 15_000,
+  llmTimeoutMs: 20_000,
 
   bankroll: 1000,
   kellyFraction: 0.25,
@@ -64,6 +69,7 @@ export const CONFIG_BOUNDS: Record<string, { min: number; max: number }> = {
   maxSecondsLeft: { min: 10, max: 300 },
   maxDataAgeMs: { min: 500, max: 60000 },
   maxDecisionLatencyMs: { min: 1000, max: 120000 },
+  llmTimeoutMs: { min: 5000, max: 55_000 },
   bankroll: { min: 1, max: 10000000 },
   kellyFraction: { min: 0.01, max: 1 },
   maxPositionUsd: { min: 1, max: 100000 },

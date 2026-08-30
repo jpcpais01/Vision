@@ -283,6 +283,35 @@ literal word or a signed number.
 
 ---
 
+## Troubleshooting the forecast
+
+**"LLM attempt 1 timed out" / no forecast ever arrives.** Almost always the
+model is spending its token budget on reasoning before it answers, so `content`
+comes back empty and the call looks like a hang. The client sends
+`reasoning: { effort: "none", exclude: true }` and allows 1,500 output tokens for
+a ~120-token answer, precisely so this cannot happen; if you have switched to a
+model that ignores the reasoning parameter, lower **LLM timeout** in
+Configuration → Edge so it fails fast, and check the event log — an empty
+completion is now reported as such, with the provider's `finish_reason`, rather
+than as a generic timeout.
+
+**The whole budget is spent before anything returns.** `llmTimeoutMs` is the
+budget for the *entire* call including retries, not per attempt: the first
+attempt gets 60% and the fallbacks share the rest, and the request is abandoned
+while the 5-minute window still has clock left. Raise it if your model is
+genuinely slow, but note that a forecast slower than **Max forecast latency**
+(default 15s) is observed and recorded but not traded — it was reading a stale
+tape by the time it answered.
+
+**`OpenRouter 401/402`.** Bad key or no credit. These are not retried; the error
+message says so explicitly.
+
+**Forecasts arrive but nothing ever trades.** Open the Decision panel — every
+gate is listed with its live value against its threshold, and the Window History
+tab shows which gate stopped each past window. The most common causes are a
+spread wider than `maxSpread` on a thin book, or an edge genuinely below
+`minEdge`, which on these markets is the normal state of affairs.
+
 ## Known limits
 
 - **Settlement.** In PAPER mode, outcomes are computed from the observed feed
