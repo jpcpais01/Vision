@@ -1,261 +1,93 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Shared domain types. This file is imported from both server routes and client
-// components, so it must stay free of any Node-only or DOM-only references.
+// Shared types. Deliberately small — if a field is not read by the UI or the
+// trading decision, it does not belong here.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type Mode = 'PAPER' | 'LIVE';
-
 export type Side = 'UP' | 'DOWN';
 
-/** A single spot observation of BTC. */
-export interface PricePoint {
-  /** Unix epoch milliseconds of the observation. */
-  t: number;
-  /** Price in USD. */
-  p: number;
+/** One price observation. */
+export interface Tick {
+  t: number; // epoch ms
+  p: number; // USD
 }
 
-/** A 10-second OHLC bucket built from raw ticks or 1s klines. */
+/** A 10-second close. Only the close matters for what we do with it. */
 export interface Bar {
-  /** Bucket start, epoch ms, aligned to a 10s boundary. */
-  t: number;
-  o: number;
-  h: number;
-  l: number;
+  t: number; // bucket start, epoch ms, aligned to 10s
   c: number;
-  /** Base-asset volume when the source provides it, else 0. */
-  v: number;
 }
 
-export type PriceSourceName = 'binance' | 'coinbase' | 'kraken' | 'chainlink';
-
-export interface PriceSnapshot {
-  price: number;
-  t: number;
-  source: PriceSourceName;
-  /** Round-trip latency of the fetch that produced this snapshot, ms. */
-  latencyMs: number;
-}
-
-export interface ChainlinkSnapshot {
-  price: number;
-  /** Chainlink round id, as a decimal string (uint80 does not fit in a number). */
-  roundId: string;
-  /** On-chain updatedAt, epoch ms. */
-  updatedAt: number;
-  /** Age of the on-chain answer at fetch time, ms. */
-  ageMs: number;
-  decimals: number;
-  feed: string;
-  chain: string;
-}
-
-// ── Polymarket ──────────────────────────────────────────────────────────────
+// ── Market ──────────────────────────────────────────────────────────────────
 
 export interface MarketToken {
   tokenId: string;
-  outcome: string;
-  /** Normalised mapping of the raw outcome string onto our UP/DOWN axis. */
   side: Side;
 }
 
-export interface BtcMarket {
-  /** Gamma market id. */
+export interface Market {
   id: string;
   slug: string;
   question: string;
-  conditionId: string;
-  /** Window open, epoch ms. */
   startMs: number;
-  /** Window close / resolution, epoch ms. */
   endMs: number;
   tokens: MarketToken[];
   minTickSize: number;
   minOrderSize: number;
   negRisk: boolean;
   acceptingOrders: boolean;
-  closed: boolean;
 }
 
-export interface BookLevel {
-  price: number;
-  size: number;
-}
-
-export interface OrderBook {
-  tokenId: string;
-  /** Descending by price. */
-  bids: BookLevel[];
-  /** Ascending by price. */
-  asks: BookLevel[];
-  /** Epoch ms the book was captured client-side. */
-  t: number;
-  /** Exchange-reported hash, when available. */
-  hash?: string;
-}
-
-export interface BookQuote {
+export interface Quote {
   bid: number | null;
   ask: number | null;
-  bidSize: number;
   askSize: number;
-  mid: number | null;
-  spread: number | null;
-  /** Notional available inside `depthCents` of the touch, in USD. */
-  bidDepthUsd: number;
-  askDepthUsd: number;
 }
 
-// ── LLM ─────────────────────────────────────────────────────────────────────
+export interface Book {
+  tokenId: string;
+  bids: { price: number; size: number }[];
+  asks: { price: number; size: number }[];
+  t: number;
+}
 
-export interface LlmForecast {
-  /** Calibrated P(UP) in [0,1] as returned by the model. */
+// ── The forecast ────────────────────────────────────────────────────────────
+
+/**
+ * What we ask the model for, and all we ask it for: a direction, and how
+ * likely it thinks that direction is.
+ */
+export interface Forecast {
+  side: Side;
+  /** Probability that `side` wins, 0..1. Always >= 0.5 by construction. */
+  probability: number;
+  /** Probability that the market resolves UP, derived from the two above. */
   pUp: number;
-  /** Model's own 0-1 confidence in its estimate; drives prior weight. */
-  confidence: number;
-  /** Model's expected absolute move over the remaining window, in USD. */
-  expectedMoveUsd: number | null;
-  /** Short free-text justification. */
-  rationale: string;
-  /** Structured drivers the model says it keyed on. */
-  keyFactors: string[];
-  /** Model's read of the near-term regime. */
-  regime: 'trending-up' | 'trending-down' | 'mean-reverting' | 'choppy' | 'unknown';
-}
-
-export interface LlmResult extends LlmForecast {
-  model: string;
-  /** Wall-clock time from request start to parsed response, ms. */
   latencyMs: number;
-  promptTokens: number | null;
-  completionTokens: number | null;
-  /** BTC price and time at the moment the request was dispatched. */
-  requestedAt: number;
-  requestPrice: number;
+  model: string;
+  /** Price at the moment the request was sent. */
+  priceAtRequest: number;
   raw: string;
 }
 
-// ── Monte Carlo ─────────────────────────────────────────────────────────────
+// ── The simulation ──────────────────────────────────────────────────────────
 
-export interface VolEstimate {
-  /** Per-second volatility of log returns. */
-  sigmaPerSec: number;
-  /** Same estimate annualised (365d), for human display. */
-  annualisedPct: number;
-  /** Standard deviation of a single 10s log return. */
-  sigma10s: number;
-  /** Excess kurtosis of the sampled 10s returns. */
-  excessKurtosis: number;
-  /** Number of returns behind the estimate. */
-  samples: number;
-  /** Per-window realised vols (per-second) used in the blend. */
-  windows: { label: string; sigmaPerSec: number; samples: number }[];
-  method: 'ewma-blend';
-}
-
-export interface MonteCarloInput {
-  /** Price the market settles against — captured at window open. */
-  startPrice: number;
-  /** Latest observed price. */
-  currentPrice: number;
-  /** Seconds already elapsed in the 5-minute window. */
-  elapsedSec: number;
-  /** Seconds left until resolution. */
-  remainingSec: number;
-  /** Prior P(UP) from the LLM. */
-  priorPUp: number;
-  /** Weight applied to the prior drift, 0 = driftless, 1 = full prior. */
-  priorWeight: number;
-  vol: VolEstimate;
-  /** Realised 10s log returns used by the bootstrap engine. */
-  recentReturns: number[];
-  paths: number;
-  engine: 'gbm' | 'bootstrap' | 'blend';
-  /** Student-t degrees of freedom for the GBM engine; <= 0 disables fat tails. */
-  studentT: number;
-  seed: number;
-}
-
-export interface MonteCarloResult {
-  /** Share of simulated paths finishing strictly above `startPrice`. */
+export interface Simulation {
+  /** Probability the market resolves UP, given everything realised so far. */
   pUp: number;
-  /** ±1 standard error of `pUp` from the simulation itself. */
-  standardError: number;
-  /** Terminal price quantiles. */
-  quantiles: { q05: number; q25: number; q50: number; q75: number; q95: number };
-  /** Distance to the barrier in units of remaining-horizon sigma. */
-  moneynessSigma: number;
+  /** The same run with a neutral 50/50 prior — the "does the LLM help?" control. */
+  pUpNeutral: number;
+  /** Per-second volatility used. */
+  sigma: number;
+  /** Annualised, for display. */
+  volPct: number;
   paths: number;
-  engine: string;
   computeMs: number;
-  /** Prior that seeded the drift, echoed for the UI. */
-  priorPUp: number;
-  /** Drift per second implied by the prior. */
-  driftPerSec: number;
-  /** Histogram of terminal prices for the UI, 41 buckets. */
-  histogram: { edges: number[]; counts: number[] };
 }
 
-// ── Decision / execution ────────────────────────────────────────────────────
+// ── Trading ─────────────────────────────────────────────────────────────────
 
-export type RejectReason =
-  | 'no-market'
-  | 'no-book'
-  | 'kill-switch'
-  | 'mode-disabled'
-  | 'insufficient-edge'
-  | 'spread-too-wide'
-  | 'insufficient-liquidity'
-  | 'price-out-of-bounds'
-  | 'too-early'
-  | 'too-late'
-  | 'stale-data'
-  | 'latency-budget'
-  | 'max-open-positions'
-  | 'already-in-market'
-  | 'daily-loss-limit'
-  | 'trade-rate-limit'
-  | 'bankroll-too-small'
-  | 'size-below-minimum'
-  | 'low-confidence';
-
-export interface EdgeAssessment {
-  side: Side;
-  tokenId: string;
-  /** Model probability that this side wins. */
-  pWin: number;
-  /** Executable ask for this side. */
-  ask: number;
-  bid: number | null;
-  spread: number | null;
-  /** pWin - ask, in probability units (== $ per share). */
-  edge: number;
-  /** edge / ask — return on capital if it resolves in our favour. */
-  edgeRatio: number;
-  /** Size available at the touch, in shares. */
-  askSize: number;
-  /** Kelly-optimal fraction of bankroll, before caps. */
-  kellyFraction: number;
-}
-
-export interface Decision {
-  t: number;
-  marketId: string;
-  /** Best side by edge, even when we do not trade it. */
-  best: EdgeAssessment | null;
-  alternatives: EdgeAssessment[];
-  trade: boolean;
-  rejectReasons: RejectReason[];
-  /** Shares we intend to buy. */
-  size: number;
-  /** Total USD at risk. */
-  notional: number;
-  secondsLeft: number;
-  /** Age of the freshest input that fed this decision, ms. */
-  dataAgeMs: number;
-}
-
-export type TradeStatus = 'PENDING' | 'OPEN' | 'WON' | 'LOST' | 'CANCELLED' | 'FAILED';
+export type TradeStatus = 'OPEN' | 'WON' | 'LOST' | 'FAILED';
 
 export interface Trade {
   id: string;
@@ -264,172 +96,91 @@ export interface Trade {
   marketSlug: string;
   tokenId: string;
   side: Side;
-  /** Epoch ms the order was submitted. */
   t: number;
-  /** Price we paid per share. */
-  entryPrice: number;
-  size: number;
-  notional: number;
+  price: number;
+  shares: number;
+  cost: number;
   /** Our probability at entry. */
-  modelP: number;
-  /** LLM's raw probability at entry. */
-  llmP: number;
-  /** Market-implied probability (the ask we lifted). */
-  marketP: number;
+  ourProb: number;
+  /** What the market was charging at entry. */
+  marketProb: number;
   edge: number;
   status: TradeStatus;
-  /** Realised P&L in USD once resolved. */
   pnl: number | null;
-  /** BTC price when the window opened. */
-  btcStart: number;
-  /** BTC price at entry. */
-  btcEntry: number;
-  /** BTC price at resolution. */
-  btcSettle: number | null;
-  resolvedAt: number | null;
-  /** Outcome of the market, independent of which side we took. */
+  barrier: number;
+  settlePrice: number | null;
   outcome: Side | null;
-  secondsLeftAtEntry: number;
-  /** Order id returned by the CLOB in LIVE mode. */
-  orderId: string | null;
-  /** Fill detail from the exchange, or the simulated fill model in PAPER. */
-  fill: FillReport;
   error?: string;
 }
 
-export interface FillReport {
-  simulated: boolean;
-  requestedSize: number;
-  filledSize: number;
-  /** Size-weighted average price actually paid. */
-  avgPrice: number;
-  /** avgPrice - touch, in probability units. */
-  slippage: number;
-  /** Levels consumed, for the paper walk-the-book model. */
-  levels: BookLevel[];
-  latencyMs: number;
-}
-
-// ── Session / metrics ───────────────────────────────────────────────────────
-
-export interface Metrics {
-  trades: number;
-  resolved: number;
-  wins: number;
-  losses: number;
-  winRate: number;
-  pnl: number;
-  /** Sum of notional deployed across resolved trades. */
-  turnover: number;
-  roi: number;
-  avgEdge: number;
-  /** Mean (p - outcome)^2 over resolved trades. */
-  brier: number;
-  /** Brier of a constant 0.5 forecaster on the same set. */
-  brierBaseline: number;
-  /** 1 - brier/brierBaseline. */
-  brierSkill: number;
-  /** Mean forecast minus realised frequency. */
-  calibrationError: number;
-  logLoss: number;
-  maxDrawdown: number;
-  sharpe: number;
-  bestTrade: number;
-  worstTrade: number;
-  currentStreak: number;
-}
-
-export interface CalibrationBin {
-  lo: number;
-  hi: number;
-  n: number;
-  meanForecast: number;
-  observedFreq: number;
-}
-
-/** One completed 5-minute market as observed by the engine, traded or not. */
-export interface CycleRecord {
+/** One completed 5-minute window, traded or not. */
+export interface WindowRecord {
   id: string;
-  mode: Mode;
   marketId: string;
-  marketSlug: string;
-  question: string;
+  slug: string;
   startMs: number;
   endMs: number;
-  btcStart: number;
-  btcEnd: number | null;
+  barrier: number;
+  close: number | null;
   outcome: Side | null;
-  llm: { pUp: number; latencyMs: number; confidence: number; regime: string } | null;
-  mc: { pUp: number; standardError: number; computeMs: number; paths: number } | null;
-  vol: { sigmaPerSec: number; annualisedPct: number } | null;
-  book: { bidUp: number | null; askUp: number | null; bidDown: number | null; askDown: number | null } | null;
-  decision: { trade: boolean; side: Side | null; edge: number | null; reasons: RejectReason[] } | null;
-  tradeId: string | null;
+  /** What the model called at the open. */
+  llmSide: Side | null;
+  llmProb: number | null;
+  llmLatencyMs: number | null;
+  /** Final simulated probability of UP, and the neutral-prior control. */
+  finalPUp: number | null;
+  finalPUpNeutral: number | null;
+  traded: boolean;
   pnl: number | null;
-  /** Wall-clock ms from window open to a completed decision. */
-  decisionLatencyMs: number | null;
+  /** Why we did not trade, in one phrase. */
+  skipReason: string | null;
 }
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'trade';
-
-export interface LogEntry {
+export interface LogLine {
   id: string;
   t: number;
-  level: LogLevel;
-  scope: string;
+  level: 'info' | 'warn' | 'error' | 'trade';
   message: string;
-  data?: Record<string, unknown>;
 }
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
-export interface TradingConfig {
+/**
+ * The whole configuration. Nine settings, all of them things an operator would
+ * actually want to change.
+ */
+export interface Config {
   mode: Mode;
-  /** Master on/off for automated order submission. */
   autoTrade: boolean;
-  /** Hard stop. When true nothing is submitted in either mode. */
   killSwitch: boolean;
-
-  // Edge / quality gates
+  /** Trade when our probability beats the ask by more than this. */
   minEdge: number;
-  minEdgeRatio: number;
-  maxSpread: number;
-  minTopOfBookShares: number;
-  minDepthUsd: number;
-  minPrice: number;
-  maxPrice: number;
-  minLlmConfidence: number;
-
-  // Timing gates
-  minSecondsLeft: number;
-  maxSecondsLeft: number;
-  maxDataAgeMs: number;
-  maxDecisionLatencyMs: number;
-  /** Total budget for the LLM call, across all retry attempts. */
-  llmTimeoutMs: number;
-
-  // Sizing / risk
-  bankroll: number;
-  kellyFraction: number;
-  maxPositionUsd: number;
-  maxPositionPctBankroll: number;
-  maxConcurrentPositions: number;
-  maxTradesPerHour: number;
+  /** Fixed USD per trade. */
+  stakeUsd: number;
+  /** Stop trading for the day after losing this much. */
   maxDailyLossUsd: number;
-  maxDailyTrades: number;
-  stopAfterConsecutiveLosses: number;
+  /** Do not enter with less than this on the clock. */
+  minSecondsLeft: number;
+  /** Monte Carlo paths per run. */
+  paths: number;
+  /** How much of the model's opinion to apply, 0..1. */
+  llmWeight: number;
+}
 
-  // Model knobs
-  mcPaths: number;
-  mcEngine: 'gbm' | 'bootstrap' | 'blend';
-  studentT: number;
-  priorWeight: number;
-  /** Shrink the final probability toward 0.5 by this fraction. */
-  probabilityShrink: number;
-  ewmaLambda: number;
-  historyMinutes: number;
-
-  // Feed
-  priceSource: PriceSourceName;
-  useChainlinkReference: boolean;
+export interface Stats {
+  trades: number;
+  wins: number;
+  losses: number;
+  open: number;
+  winRate: number;
+  pnl: number;
+  today: number;
+  /** Windows observed. */
+  windows: number;
+  /** Brier of the simulation with the LLM prior, and without it. */
+  brierWithLlm: number | null;
+  brierNeutral: number | null;
+  /** How often the model's direction call was right. */
+  llmAccuracy: number | null;
+  scored: number;
 }

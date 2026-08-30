@@ -1,5 +1,5 @@
 import 'server-only';
-import type { CycleRecord, LogEntry, Trade, TradingConfig } from './types';
+import type { Config, Trade, WindowRecord } from './types';
 import { DEFAULT_CONFIG } from './config';
 import { env } from './env';
 
@@ -18,43 +18,37 @@ import { env } from './env';
  * trail of every decision.
  */
 
-const MAX_TRADES = 2000;
-const MAX_CYCLES = 2000;
-const MAX_LOGS = 1000;
+const MAX_ROWS = 1000;
 
 export interface Store {
   readonly kind: 'memory' | 'upstash';
-  /** Round-trip probe. Reports whether the backend is actually reachable. */
+  /** Round-trip probe. Configured is not the same as reachable. */
   ping(): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
-  getConfig(): Promise<TradingConfig>;
-  setConfig(config: TradingConfig): Promise<void>;
+  getConfig(): Promise<Config>;
+  setConfig(config: Config): Promise<void>;
   getKillSwitch(): Promise<boolean>;
   setKillSwitch(on: boolean): Promise<void>;
   listTrades(): Promise<Trade[]>;
   upsertTrade(trade: Trade): Promise<void>;
-  listCycles(): Promise<CycleRecord[]>;
-  upsertCycle(cycle: CycleRecord): Promise<void>;
-  listLogs(): Promise<LogEntry[]>;
-  appendLogs(entries: LogEntry[]): Promise<void>;
-  reset(scope: 'all' | 'trades' | 'cycles' | 'logs'): Promise<void>;
+  listWindows(): Promise<WindowRecord[]>;
+  upsertWindow(w: WindowRecord): Promise<void>;
+  reset(): Promise<void>;
 }
 
 const KEYS = {
   config: 'vision:config',
   kill: 'vision:killswitch',
   trades: 'vision:trades',
-  cycles: 'vision:cycles',
-  logs: 'vision:logs',
+  windows: 'vision:windows',
 };
 
 // ── Memory implementation ───────────────────────────────────────────────────
 
 interface MemoryState {
-  config: TradingConfig;
+  config: Config;
   kill: boolean;
   trades: Map<string, Trade>;
-  cycles: Map<string, CycleRecord>;
-  logs: LogEntry[];
+  windows: Map<string, WindowRecord>;
 }
 
 // Hung off globalThis so it survives Next.js module reloads in dev, which would
@@ -67,8 +61,7 @@ function memoryState(): MemoryState {
       config: { ...DEFAULT_CONFIG },
       kill: false,
       trades: new Map(),
-      cycles: new Map(),
-      logs: [],
+      windows: new Map(),
     };
   }
   return g.__visionStore;
@@ -80,11 +73,10 @@ class MemoryStore implements Store {
   async ping() {
     return { ok: true, latencyMs: 0 };
   }
-
   async getConfig() {
     return { ...memoryState().config };
   }
-  async setConfig(config: TradingConfig) {
+  async setConfig(config: Config) {
     memoryState().config = { ...config };
   }
   async getKillSwitch() {
@@ -94,32 +86,21 @@ class MemoryStore implements Store {
     memoryState().kill = on;
   }
   async listTrades() {
-    return sortByTime(Array.from(memoryState().trades.values())).slice(-MAX_TRADES);
+    return [...memoryState().trades.values()].sort((a, b) => a.t - b.t).slice(-MAX_ROWS);
   }
   async upsertTrade(trade: Trade) {
     memoryState().trades.set(trade.id, trade);
-    trimMap(memoryState().trades, MAX_TRADES);
   }
-  async listCycles() {
-    return sortByStart(Array.from(memoryState().cycles.values())).slice(-MAX_CYCLES);
+  async listWindows() {
+    return [...memoryState().windows.values()].sort((a, b) => a.startMs - b.startMs).slice(-MAX_ROWS);
   }
-  async upsertCycle(cycle: CycleRecord) {
-    memoryState().cycles.set(cycle.id, cycle);
-    trimMap(memoryState().cycles, MAX_CYCLES);
+  async upsertWindow(w: WindowRecord) {
+    memoryState().windows.set(w.id, w);
   }
-  async listLogs() {
-    return memoryState().logs.slice(-MAX_LOGS);
-  }
-  async appendLogs(entries: LogEntry[]) {
-    const s = memoryState();
-    s.logs.push(...entries);
-    if (s.logs.length > MAX_LOGS) s.logs = s.logs.slice(-MAX_LOGS);
-  }
-  async reset(scope: 'all' | 'trades' | 'cycles' | 'logs') {
-    const s = memoryState();
-    if (scope === 'all' || scope === 'trades') s.trades.clear();
-    if (scope === 'all' || scope === 'cycles') s.cycles.clear();
-    if (scope === 'all' || scope === 'logs') s.logs = [];
+  async reset() {
+    const st = memoryState();
+    st.trades.clear();
+    st.windows.clear();
   }
 }
 
@@ -176,9 +157,9 @@ class UpstashStore implements Store {
   }
 
   async getConfig() {
-    return this.getJson<TradingConfig>(KEYS.config, { ...DEFAULT_CONFIG });
+    return this.getJson<Config>(KEYS.config, { ...DEFAULT_CONFIG });
   }
-  async setConfig(config: TradingConfig) {
+  async setConfig(config: Config) {
     await this.command(['SET', KEYS.config, JSON.stringify(config)]);
   }
   async getKillSwitch() {
@@ -188,47 +169,22 @@ class UpstashStore implements Store {
   async setKillSwitch(on: boolean) {
     await this.command(['SET', KEYS.kill, on ? '1' : '0']);
   }
-
-  // Records are stored in a hash keyed by id so re-posting an updated trade
-  // (PENDING -> OPEN -> WON) overwrites rather than appends.
   async listTrades() {
     const rows = await this.command<Record<string, string>>(['HGETALL', KEYS.trades]);
-    return sortByTime(parseHash<Trade>(rows)).slice(-MAX_TRADES);
+    return parseHash<Trade>(rows).sort((a, b) => a.t - b.t).slice(-MAX_ROWS);
   }
   async upsertTrade(trade: Trade) {
     await this.command(['HSET', KEYS.trades, trade.id, JSON.stringify(trade)]);
   }
-  async listCycles() {
-    const rows = await this.command<Record<string, string>>(['HGETALL', KEYS.cycles]);
-    return sortByStart(parseHash<CycleRecord>(rows)).slice(-MAX_CYCLES);
+  async listWindows() {
+    const rows = await this.command<Record<string, string>>(['HGETALL', KEYS.windows]);
+    return parseHash<WindowRecord>(rows).sort((a, b) => a.startMs - b.startMs).slice(-MAX_ROWS);
   }
-  async upsertCycle(cycle: CycleRecord) {
-    await this.command(['HSET', KEYS.cycles, cycle.id, JSON.stringify(cycle)]);
+  async upsertWindow(w: WindowRecord) {
+    await this.command(['HSET', KEYS.windows, w.id, JSON.stringify(w)]);
   }
-  async listLogs() {
-    const rows = await this.command<string[]>(['LRANGE', KEYS.logs, 0, MAX_LOGS - 1]);
-    return (rows ?? [])
-      .map((r) => {
-        try {
-          return JSON.parse(r) as LogEntry;
-        } catch {
-          return null;
-        }
-      })
-      .filter((x): x is LogEntry => x !== null)
-      .reverse();
-  }
-  async appendLogs(entries: LogEntry[]) {
-    if (entries.length === 0) return;
-    await this.command(['LPUSH', KEYS.logs, ...entries.map((e) => JSON.stringify(e))]);
-    await this.command(['LTRIM', KEYS.logs, 0, MAX_LOGS - 1]);
-  }
-  async reset(scope: 'all' | 'trades' | 'cycles' | 'logs') {
-    const keys: string[] = [];
-    if (scope === 'all' || scope === 'trades') keys.push(KEYS.trades);
-    if (scope === 'all' || scope === 'cycles') keys.push(KEYS.cycles);
-    if (scope === 'all' || scope === 'logs') keys.push(KEYS.logs);
-    if (keys.length > 0) await this.command(['DEL', ...keys]);
+  async reset() {
+    await this.command(['DEL', KEYS.trades, KEYS.windows]);
   }
 }
 
@@ -250,21 +206,6 @@ function parseHash<T>(rows: Record<string, string> | string[] | null): T[] {
   return out;
 }
 
-function sortByTime<T extends { t: number }>(rows: T[]): T[] {
-  return rows.sort((a, b) => a.t - b.t);
-}
-function sortByStart<T extends { startMs: number }>(rows: T[]): T[] {
-  return rows.sort((a, b) => a.startMs - b.startMs);
-}
-function trimMap<T>(map: Map<string, T>, max: number) {
-  if (map.size <= max) return;
-  const drop = map.size - max;
-  let i = 0;
-  for (const key of map.keys()) {
-    if (i++ >= drop) break;
-    map.delete(key);
-  }
-}
 
 let cached: Store | null = null;
 

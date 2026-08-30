@@ -1,345 +1,163 @@
 # Vision — Polymarket BTC 5-minute UP/DOWN
 
-A production-ready Next.js/TypeScript trading system for Polymarket's Bitcoin
-5-minute UP/DOWN binary markets. It runs on Vercel, uses the official Polymarket
-CLOB APIs and WebSockets, real exchange price data, the Chainlink BTC/USD
-reference feed, and an LLM forecast through OpenRouter — refined by a conditional
-Monte Carlo probability updater before anything is traded.
+A small Next.js app that trades Polymarket's Bitcoin 5-minute up/down markets.
+Runs on Vercel. Paper mode by default.
 
-Two modes: **PAPER** (entirely real market data, simulated fills) and **LIVE**
-(real orders, real money, behind three independent safety gates).
+## How it works
 
----
+Every five minutes Polymarket opens a new market: will Bitcoin be higher in five
+minutes than it is right now? Vision plays one cycle per window.
 
-## What it actually does
+1. **Wait for a fresh window.** It never joins one already in progress — the
+   whole bet is measured against the price at the open, and joining late means
+   guessing that number.
+2. **At the open, record the price.** That is the barrier the market settles on.
+3. **Ask the model once.** It gets the last 30 minutes of prices at 10-second
+   resolution plus the current price, and answers with two things only:
 
-Each 5-minute window runs one cycle:
+   ```json
+   { "direction": "UP", "probability": 62 }
+   ```
 
-1. **Capture the barrier.** The market resolves on whether BTC closes above its
-   price at the window's open. That price is captured to the tick and is the
-   single number every downstream probability refers to.
-2. **Send the tape to the LLM.** The last hour of 10-second closes goes to
-   `deepseek/deepseek-v4-flash-0731` via OpenRouter, encoded as dollar offsets
-   from the barrier, with realised volatility, multi-horizon returns and the
-   random-walk anchor precomputed. The model is asked for a **calibrated
-   probability**, told 0.50 is the right answer when it has no view, and told it
-   is scored by Brier.
-3. **Keep recording while it thinks.** The BTC path continues to accumulate
-   during the model's round trip. Those seconds are not dead time — they are the
-   information the model could not have had.
-4. **Run the conditional Monte Carlo.** When the forecast lands:
-   - realised volatility is re-estimated from recent 10-second returns;
-   - the LLM's P(UP) is converted into a **drift**, not blended as a number —
-     the drift `m = σ·Φ⁻¹(p)/√T` is the one consistent with that probability
-     under the estimated volatility;
-   - simulation starts from the price **now**, so the already-realised portion of
-     the window is carried in the initial condition rather than re-simulated;
-   - only the remaining seconds are simulated;
-   - P(UP) is the share of paths finishing above the barrier.
-5. **Compare against the executable book.** The updated probability is compared
-   against the real Polymarket CLOB ask, not the midpoint, and the trade is taken
-   only if every edge, liquidity, spread, timing and risk gate passes.
-6. **Settle and score.** The window is recorded whether or not it was traded,
-   with the forecast, the simulation, the book, the decision and the reason for
-   any rejection.
+   No confidence score, no commentary. The direction fixes which side we are
+   allowed to trade for the rest of the window. The probability seeds step 4.
+4. **Re-check that answer every second.** By the time the model replies, Bitcoin
+   has already moved — and it keeps moving for another four minutes. A Monte
+   Carlo simulation turns the model's probability into a drift, applies it only
+   to the seconds remaining, and starts from the price *right now*. So the
+   number we trade on is never the number the model returned.
+5. **Buy when we are far enough ahead.** If our probability beats what the
+   market charges for that side by more than the minimum edge (5% by default),
+   it buys. Only that side, only once per window.
+6. **Settle at the close** and record the window, traded or not.
 
-The behaviour this buys you: a bullish LLM call that BTC has already run 40 bps
-against, with 60 seconds left, comes out of the updater as a *low* probability —
-because the drift needed to recover the barrier in the time remaining is
-implausible under the realised volatility. A naive pipeline would still trade it.
+The point of step 4 is worth stating plainly: a call of "UP at 70%" on a window
+where Bitcoin has since dropped well below the barrier with a minute left comes
+out *low*, because the recovery needed in the time remaining is not plausible at
+the current volatility. The model picks a side; the simulation decides whether
+that side is still worth paying for.
 
----
+### Does the model actually help?
 
-## Quick start
+Probably the fairest thing to say is: unknown, and worth measuring. Over five
+minutes Bitcoin is close to a coin flip, and the model's answer is already
+slightly stale when it arrives.
+
+So every simulation is run twice on the same random draws — once primed with the
+model's call, once with a neutral 50/50 prior — and both are scored against what
+actually happened. The app shows the comparison directly: if the model adds
+nothing, the two Brier scores match and it says so, and you can set its weight to
+0 in Settings and trade on the volatility maths alone.
+
+## Setup
 
 ```bash
 npm install
-cp .env.example .env.local     # add OPENROUTER_API_KEY at minimum
-npm run dev                    # http://localhost:3000
+cp .env.example .env.local     # add OPENROUTER_API_KEY
+npm run dev
 ```
 
-Press **Start engine**. It connects the feeds and runs cycles immediately;
-**Auto-trade** stays off until you switch it on, so you can watch it decide
-before you let it act.
-
-```bash
-npm test          # 62 tests: quant core, risk gates, parsing, metrics
-npm run typecheck
-npm run build
-```
-
-## Deploying to Vercel
-
-1. Push this repo and import it at [vercel.com/new](https://vercel.com/new).
-   The framework preset is detected; no build configuration is needed.
-2. Add the environment variables below under **Settings → Environment
-   Variables**. Every one of them is server-side; none is prefixed
-   `NEXT_PUBLIC_`, and none is ever returned to the browser.
-3. Deploy.
+Press **Start**. It waits for the next window, then runs cycles. **Trade
+automatically** stays off until you turn it on, so you can watch it decide first.
 
 ### Environment variables
 
-| Variable | Required | Purpose |
+| Variable | Needed | What for |
 |---|---|---|
-| `OPENROUTER_API_KEY` | **yes** | Forecasts fail without it; everything else still runs. |
+| `OPENROUTER_API_KEY` | **yes** | Without it the model can't be asked and nothing trades. |
 | `OPENROUTER_MODEL` | no | Defaults to `deepseek/deepseek-v4-flash-0731`. |
-| `VISION_ACCESS_TOKEN` | strongly recommended | When set, every API route requires an `x-vision-token` header and the UI asks for it once. A Vercel URL is public by default — and in LIVE mode this dashboard spends money. |
-| `UPSTASH_REDIS_REST_URL` / `_TOKEN` | recommended | Durable trade and window history. Without them, state lives in process memory and is wiped on every serverless cold start. |
-| `CHAINLINK_RPC_URL` | no | Any Ethereum mainnet JSON-RPC endpoint. Defaults to a public node. |
-| `CHAINLINK_BTC_USD_FEED` | no | Defaults to the mainnet BTC/USD aggregator. |
-| `POLYMARKET_PRIVATE_KEY` | LIVE only | Polygon key of the wallet holding USDC.e. |
-| `POLYMARKET_FUNDER_ADDRESS` | LIVE only | Set if funds sit in a Polymarket proxy/Safe wallet. |
-| `POLYMARKET_SIGNATURE_TYPE` | LIVE only | `0` EOA, `1` email/magic proxy, `2` browser-wallet Safe proxy. |
-| `POLYMARKET_API_KEY` / `_SECRET` / `_PASSPHRASE` | no | Pre-derived L2 credentials; derived from the private key on first use if omitted. |
-| `ALLOW_LIVE_TRADING` | LIVE only | Must be exactly `true`. LIVE orders are refused otherwise, whatever the UI says. |
+| `VISION_ACCESS_TOKEN` | recommended | Puts the whole app behind a shared secret. A Vercel URL is public, and in live mode this page spends money. |
+| `UPSTASH_REDIS_REST_URL` / `_TOKEN` | recommended | Keeps trade history across restarts. Without it, history lives in memory and is lost on every cold start. |
+| `POLYMARKET_PRIVATE_KEY` | live only | Polygon key holding USDC.e. |
+| `ALLOW_LIVE_TRADING` | live only | Must be exactly `true`. Live orders are refused otherwise, whatever the UI says. |
+| `CHAINLINK_RPC_URL` | no | Any Ethereum RPC, for the cross-check readout. |
 
-See `.env.example` for the annotated full list.
+Deploy: push, import at [vercel.com/new](https://vercel.com/new), add the
+variables, done. No build configuration needed.
 
-### Setting up durable storage (Upstash Redis)
+## About the price feed
 
-Without this, trades and window history live in process memory and are wiped on
-every serverless cold start — which is exactly the data a paper test exists to
-produce. The free tier is more than enough: the app writes a couple of small
-records per 5-minute window.
+Polymarket settles these markets on **Chainlink Data Streams BTC/USD**. Chainlink
+does not offer that stream without commercial credentials, and its free on-chain
+feed is a different, much slower product — it moves on a 0.5% deviation or an
+hourly heartbeat, so it cannot produce a 10-second series at all.
 
-1. Create a database at [console.upstash.com](https://console.upstash.com) →
-   **Create Database**. Pick the region closest to your Vercel deployment region
-   (every write is a round trip); type **Regional** is fine.
-2. On the database page open the **REST API** tab and copy the two values
-   labelled `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`. Use the
-   **REST** credentials, not the `redis://` connection string — this app speaks
-   Upstash's HTTP API so it works from any runtime with no connection pooling.
-3. Set both, locally in `.env.local` and in **Vercel → Settings → Environment
-   Variables**:
+So the app uses **Pyth**, which is free, needs no key, and is built the same way:
+an aggregate of major exchange prices rather than one venue's tape. It is not the
+settlement feed and will not match it to the cent. The free Chainlink feed is
+still read every 30 seconds purely to show the gap between the two, so a
+divergence is visible rather than silent.
 
-   ```bash
-   UPSTASH_REDIS_REST_URL=https://your-db-12345.upstash.io
-   UPSTASH_REDIS_REST_TOKEN=AX...
-   ```
+If you get Chainlink Data Streams credentials, swapping the source is one file
+(`src/lib/pyth.ts`).
 
-4. Restart (Vercel: redeploy — env changes are not picked up by a running
-   deployment) and confirm it took:
+## Live mode
 
-   ```bash
-   curl -s https://your-app.vercel.app/api/health | jq '{storage, storageOk, storageLatencyMs, storageError}'
-   # { "storage": "upstash", "storageOk": true, "storageLatencyMs": 34, "storageError": null }
-   ```
-
-   The dashboard shows the same thing as a badge beside the tab bar: **durable
-   storage** (green) when the round trip succeeds, **storage unreachable** (red)
-   with the error on hover when the credentials are configured but wrong, and
-   **in-memory storage** (grey) when they are absent. Configured is not the same
-   as reachable, so the health check actually issues a `PING` rather than
-   inferring from the presence of the variables.
-
-Alternatively, if you deploy on Vercel you can add the Upstash integration from
-the **Storage** tab of your project — it injects both variables for you and no
-manual copying is needed.
-
-**What gets stored.** Five keys under a `vision:` prefix: `config`,
-`killswitch`, and hashes of `trades`, `cycles` and `logs`. Trades and cycles are
-keyed by id so a re-post of an updated record (`PENDING` → `OPEN` → `WON`)
-overwrites rather than duplicating, which is what makes the persistence retryable
-after a dropped connection. History is capped at 2,000 trades, 2,000 windows and
-1,000 log lines. **Reset records** in the Performance tab clears them.
-
----
-
-## Enabling LIVE mode
-
-Three independent conditions must all hold before a single real order is sent:
+Three independent conditions must all hold before a real order is sent:
 
 1. `ALLOW_LIVE_TRADING=true` **in the server environment** — not a UI toggle.
-2. `POLYMARKET_PRIVATE_KEY` configured server-side.
-3. The request asks for LIVE mode and the server-side kill switch is off.
+2. `POLYMARKET_PRIVATE_KEY` configured server-side. It is read in one file and
+   never reaches the browser.
+3. The kill switch is off.
 
-The wallet must already be set up for Polymarket: USDC.e on Polygon, the CTF
-Exchange contracts approved, and the account registered. Vision does not handle
-onboarding or approvals — it places orders against an account that already works.
+The browser proposes and the server disposes. On every order the server re-reads
+the kill switch from its own storage, re-fetches the order book, and re-clamps
+the stake against its own copy of the config — so editing the request in devtools
+changes nothing that matters.
 
-**The client proposes; the server disposes.** Nothing the browser sends is
-trusted for anything that matters. On every order the server re-fetches the order
-book, re-clamps size against the server-held risk config, re-checks the price
-bounds and spread, and reads the kill switch. Editing the request in devtools
-cannot exceed a configured cap.
+**Stop all** engages the kill switch: a server-side flag checked on every order
+request, plus cancellation of any resting orders, plus auto-trade off.
 
-## Safety controls
+## Settings
 
-- **Kill switch** — sets a server-side flag checked on every order request (so a
-  stale browser tab cannot trade through it), cancels every resting order on the
-  account, forces auto-trade off, and stops the engine.
-- **Risk limits** — max position in dollars and as a fraction of bankroll, max
-  concurrent positions, trades per hour, trades per day, daily loss limit, and a
-  consecutive-loss circuit breaker. All are enforced server-side and all are
-  clamped into documented bounds on write.
-- **Fractional Kelly** — position size is Kelly `(p − ask)/(1 − ask)` scaled by a
-  configurable fraction, then hard-capped. Full Kelly assumes the probability is
-  exactly right; this one is an estimate.
-- **Probability haircuts** — the simulation's own standard error is always
-  subtracted *against* the trade, and the final probability is shrunk toward 0.50
-  before sizing. Monte Carlo noise can never manufacture an edge.
-- **Access token** — optional shared secret on every route, compared in constant
-  time.
+Six things, all on sliders:
 
----
+- **Minimum edge** — how far ahead of the market price to require before buying
+- **Stake per trade** — fixed dollars per position
+- **Stop after losing** — daily loss limit
+- **How much to trust the model** — 0 ignores its call entirely
+- **Don't enter with less than** — seconds left on the clock
+- **Paper / Live**
 
-## Architecture
+## Layout
 
 ```
-Browser (the trading loop)              Vercel functions (secrets + validation)
-├── Binance/Coinbase/Kraken WS   ─┐     ├── /api/price/history   1h of 10s bars
-├── Polymarket CLOB market WS    ─┤     ├── /api/price/tick      polling fallback
-├── 10s bar aggregation          ─┤     ├── /api/price/chainlink oracle reference
-├── volatility estimation        ─┼───▶ ├── /api/market          Gamma discovery
-├── conditional Monte Carlo      ─┤     ├── /api/book            CLOB books
-├── decision + risk gates        ─┤     ├── /api/llm/forecast    OpenRouter
-└── React dashboard              ─┘     ├── /api/trade           paper + live exec
-                                        ├── /api/killswitch      emergency stop
-                                        └── /api/state           durable record
+src/lib/
+  pyth.ts        price feed (+ the Chainlink cross-check)
+  market.ts      finding the live 5-minute market
+  book.ts        order book maths, and the paper fill model
+  clob.ts        Polymarket reads
+  llm.ts         the prompt, the call, and tolerant parsing
+  montecarlo.ts  the per-second probability update
+  engine.ts      the loop
+  live.ts        real order placement
+  store.ts       trade history
+src/app/api/     server routes — all secrets, all validation
+src/components/  the app
 ```
 
-**Why the loop lives in the browser.** The window is 300 seconds, the LLM round
-trip is a meaningful fraction of it, and every hop through a serverless function
-is latency spent on a clock that does not stop. A direct exchange WebSocket
-delivers a trade in tens of milliseconds; a polled serverless proxy adds a cold
-start, a region hop and a poll interval. So the browser keeps the tape and the
-clock, and the server keeps the secrets, re-validates every order, and stores the
-record. Both feeds fall back to authenticated server polling when a socket cannot
-be established, and the dashboard says which path it is on.
+## Tests
 
-### Data sources
-
-| Purpose | Source | Notes |
-|---|---|---|
-| 10-second BTC history | Binance 1s klines | The only public REST source that can reconstruct true 10s resolution an hour deep. Six hostnames are tried in turn. |
-| Live BTC ticks | Binance / Coinbase / Kraken trade WS | Direct from the browser; falls back to server polling. |
-| Degraded history | Coinbase / Kraken 60s candles | Upsampled to the 10s grid and **flagged as interpolated** in the UI, because it understates realised volatility. |
-| Settlement reference | Chainlink BTC/USD aggregator | Read over JSON-RPC. These markets settle on an oracle, so the basis against the exchange feed is tracked and displayed, never hidden. |
-| Markets | Polymarket Gamma API | Discovered by filtering open markets for the asset, the up/down framing, and a genuine 5-minute span — not a hard-coded slug, which has changed before. |
-| Order books | Polymarket CLOB REST + market WS | Deltas applied locally, reconciled against REST on a slow timer regardless. |
-
-### Layout
-
-```
-src/lib/math/          normal distribution, xoshiro128** PRNG, statistics
-src/lib/quant/         volatility, Monte Carlo, calibration & metrics
-src/lib/price/         exchange sources, Chainlink, 10s aggregation
-src/lib/polymarket/    Gamma discovery, book maths, REST, live execution
-src/lib/llm/           prompt construction, OpenRouter, tolerant parsing
-src/lib/engine/        the cycle state machine, feeds, risk gates
-src/components/        dashboard, panels, hand-rolled SVG charts
-src/app/api/           server routes (all secrets, all validation)
+```bash
+npm test
 ```
 
----
-
-## The dashboard
-
-- **Live cycle** — BTC against the barrier with the LLM dispatch, forecast and
-  entry marked on the path; the three probabilities (Monte Carlo, LLM prior,
-  market mid) over the window; both order books with depth; the simulated
-  terminal distribution split at the barrier; and every decision gate with its
-  live value against its threshold.
-- **Performance** — cumulative P&L, win rate with a Wilson interval, Brier score
-  and skill, log loss, calibration error, drawdown, Sharpe, and a reliability
-  diagram.
-- **Window history** — every observed 5-minute market, traded or not, with what
-  the model thought, what the market offered, and which gate stopped the trade.
-
-**Read Brier before P&L.** Over a few dozen 5-minute binaries, P&L is almost pure
-noise; Brier score and the calibration curve converge fast enough to tell you
-whether the model knows anything. Below 20 resolved trades the dashboard says so
-rather than leaving you to infer it. Calibration is scored over *every* observed
-window, not only the traded ones — restricting to trades would sample only the
-windows where the model disagreed with the market, which is precisely the biased
-subset.
-
-Chart colours were validated for colour-vision deficiency against the dark chart
-surface. UP/DOWN never rely on colour alone: every such readout also carries the
-literal word or a signed number.
-
----
-
-## Testing
-
-62 tests, no network required:
-
-- **Monte Carlo against closed form.** The simulated probability is checked
-  against the analytic Gaussian answer across five market states, including
-  cases with a non-neutral prior — agreement within ~1pp.
-- **Conditional behaviour.** A 75% bullish prior with BTC $150 down and 30
-  seconds left must produce < 5%. A prior-aligned move must produce > 90%. With
-  the full window remaining and full prior weight, the simulation must reproduce
-  the prior itself, which is the definition of the drift solve.
-- **Volatility.** Unbiased recovery of a known sigma across twelve draws, and a
-  spliced calm→violent series to confirm the estimator tracks a regime shift
-  rather than averaging the hour.
-- **Every risk gate**, blocked in isolation, plus sizing caps, Kelly scaling and
-  config sanitisation against hostile input.
-- **Fill simulation** — walking the book, honest partials, and never paying
-  through the configured maximum price.
-- **LLM parsing** — fenced JSON, prose, nested objects, percentages, and
-  malformed probabilities, which are *rejected* rather than coerced.
-
----
-
-## How it works, in full
-
-`docs/how-it-works.html` is a standalone walkthrough of one 5-minute cycle —
-every stage in the order it happens, the conditional-update maths, all 22
-decision gates with their shipped defaults, the sizing and execution path, and
-the data sources with their failure behaviour. Open it in a browser; it needs no
-build step and no network beyond its two webfonts.
-
-## Troubleshooting the forecast
-
-**"LLM attempt 1 timed out" / no forecast ever arrives.** Almost always the
-model is spending its token budget on reasoning before it answers, so `content`
-comes back empty and the call looks like a hang. The client sends
-`reasoning: { effort: "none", exclude: true }` and allows 1,500 output tokens for
-a ~120-token answer, precisely so this cannot happen; if you have switched to a
-model that ignores the reasoning parameter, lower **LLM timeout** in
-Configuration → Edge so it fails fast, and check the event log — an empty
-completion is now reported as such, with the provider's `finish_reason`, rather
-than as a generic timeout.
-
-**The whole budget is spent before anything returns.** `llmTimeoutMs` is the
-budget for the *entire* call including retries, not per attempt: the first
-attempt gets 60% and the fallbacks share the rest, and the request is abandoned
-while the 5-minute window still has clock left. Raise it if your model is
-genuinely slow, but note that a forecast slower than **Max forecast latency**
-(default 15s) is observed and recorded but not traded — it was reading a stale
-tape by the time it answered.
-
-**`OpenRouter 401/402`.** Bad key or no credit. These are not retried; the error
-message says so explicitly.
-
-**Forecasts arrive but nothing ever trades.** Open the Decision panel — every
-gate is listed with its live value against its threshold, and the Window History
-tab shows which gate stopped each past window. The most common causes are a
-spread wider than `maxSpread` on a thin book, or an edge genuinely below
-`minEdge`, which on these markets is the normal state of affairs.
+25 tests, no network needed. The ones that matter: the simulation reproduces the
+prior it was given when the full window remains, collapses when price has moved
+against the call, and ignores the model entirely at zero weight; malformed model
+replies are rejected rather than guessed at; paper fills walk real depth and
+report shortfalls; the forecast call shares one timeout budget across retries and
+fails fast on a bad key.
 
 ## Known limits
 
-- **Settlement.** In PAPER mode, outcomes are computed from the observed feed
-  price at the window close. In LIVE mode the on-chain oracle resolution is
-  authoritative and can differ at the boundary — which is why the Chainlink basis
-  is tracked and shown throughout the window.
-- **Barrier accuracy.** If the engine starts mid-window it infers the barrier
-  from the nearest bar and labels it `estimated`. That can be a dollar or two out,
-  which is a real edge error; the UI flags it rather than hiding it.
-- **In-memory storage.** Without Upstash configured, history does not survive a
-  serverless cold start.
-- **Interpolated feeds.** If Binance is unreachable, 60-second candles are
-  upsampled. Volatility is then understated and the UI marks the feed
-  `interpolated`.
-- **The edge may not exist.** A 5-minute Bitcoin binary is close to a coin flip
-  by construction, and Polymarket's book is not naive. Run PAPER for long enough
-  that the calibration curve is meaningful before risking anything.
+- **The tab must stay open.** The loop runs in the browser. Closing it stops
+  trading, which is the safer default anyway.
+- **The price is a proxy**, not the settlement feed. See above.
+- **Paper settlement uses our feed**, so it can disagree with the on-chain result
+  at the boundary on a very close window.
+- **The edge may not exist.** A five-minute Bitcoin binary is close to a coin
+  flip and Polymarket's book is not naive. Run paper mode until the numbers say
+  something before risking real money.
 
-## Disclaimer
-
-This is software for trading real money on real markets. It is not financial
-advice. Run it in PAPER mode until you understand exactly what it does, and never
-give the LIVE wallet more than you can afford to lose.
+Not financial advice.

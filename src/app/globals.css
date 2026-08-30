@@ -2,84 +2,243 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Tokens ───────────────────────────────────────────────────────────────
+   Calm, slightly cool neutrals so the two colours that carry meaning — the
+   up/down pair — are the only saturated things on screen.
+   ───────────────────────────────────────────────────────────────────────── */
 :root {
+  color-scheme: light;
+  --bg: #f4f6f9;
+  --card: #ffffff;
+  --line: #e3e8ef;
+  --chip: #eef1f6;
+  --text: #101623;
+  --muted: #6b7686;
+  --accent: #2f6fe4;
+  --accent-bg: #e7effc;
+  --up: #12805b;
+  --up-bg: #e2f2ec;
+  --down: #c0453f;
+  --down-bg: #fbe9e8;
+  --warn: #8a6100;
+  --warn-bg: #fdf2dc;
+  --shadow: 0 1px 2px rgba(16, 22, 35, 0.04), 0 6px 20px -12px rgba(16, 22, 35, 0.16);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --bg: #0b0e14;
+    --card: #141922;
+    --line: #232b38;
+    --chip: #1c232e;
+    --text: #e6ebf3;
+    --muted: #8b96a7;
+    --accent: #5b9bf0;
+    --accent-bg: #16273f;
+    --up: #2aa87b;
+    --up-bg: #10302579;
+    --down: #e2716c;
+    --down-bg: #35201f;
+    --warn: #d9a441;
+    --warn-bg: #2f2612;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -16px rgba(0, 0, 0, 0.8);
+  }
+}
+
+:root[data-theme='dark'] {
   color-scheme: dark;
+  --bg: #0b0e14;
+  --card: #141922;
+  --line: #232b38;
+  --chip: #1c232e;
+  --text: #e6ebf3;
+  --muted: #8b96a7;
+  --accent: #5b9bf0;
+  --accent-bg: #16273f;
+  --up: #2aa87b;
+  --up-bg: #10302579;
+  --down: #e2716c;
+  --down-bg: #35201f;
+  --warn: #d9a441;
+  --warn-bg: #2f2612;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -16px rgba(0, 0, 0, 0.8);
 }
 
-html,
+* {
+  box-sizing: border-box;
+}
+
 body {
-  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'IBM Plex Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
-body {
-  @apply bg-base-950 text-slate-200 antialiased;
-  background-image:
-    radial-gradient(1100px 500px at 12% -10%, rgba(91, 156, 255, 0.07), transparent 60%),
-    radial-gradient(900px 420px at 88% -5%, rgba(34, 197, 138, 0.05), transparent 55%);
-  background-attachment: fixed;
-}
-
-/* Tabular figures everywhere numbers change in place, so the layout does not
-   jitter as prices tick. */
-.tnum {
+/* Numbers change in place constantly; tabular figures stop the layout jittering. */
+.num {
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
-  font-feature-settings: 'tnum';
+  letter-spacing: -0.01em;
 }
 
 @layer components {
-  .panel {
-    @apply rounded-xl border border-base-700/70 bg-base-900/60 backdrop-blur-sm;
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
   }
-  .panel-header {
-    @apply flex items-center justify-between gap-3 border-b border-base-700/60 px-4 py-2.5;
+
+  .label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--muted);
   }
-  .panel-title {
-    @apply text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400;
-  }
-  .panel-body {
-    @apply p-4;
-  }
-  .chip {
-    @apply inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-2xs font-medium;
-  }
+
   .btn {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium
-           transition-colors disabled:cursor-not-allowed disabled:opacity-40;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 9px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    padding: 6px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    transition: background-color 0.15s, border-color 0.15s, opacity 0.15s;
   }
-  .btn-default {
-    @apply border-base-600 bg-base-800 text-slate-200 hover:bg-base-700;
+  .btn:hover:not(:disabled) {
+    background: var(--chip);
+  }
+  .btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
   .btn-primary {
-    @apply border-accent/50 bg-accent/15 text-accent hover:bg-accent/25;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.08);
+    background: var(--accent);
   }
   .btn-danger {
-    @apply border-down/50 bg-down/15 text-down hover:bg-down/25;
+    color: var(--down);
+    border-color: color-mix(in srgb, var(--down) 35%, var(--line));
   }
-  .field {
-    @apply w-full rounded-md border border-base-600 bg-base-950/70 px-2 py-1 text-xs text-slate-200
-           outline-none transition-colors focus:border-accent/70 tnum;
+  .btn-danger:hover:not(:disabled) {
+    background: var(--down-bg);
   }
-  .label {
-    @apply block text-2xs font-medium uppercase tracking-wider text-slate-500;
+  .btn-warn {
+    color: var(--warn);
+    border-color: color-mix(in srgb, var(--warn) 35%, var(--line));
   }
-  .scroll-thin {
-    scrollbar-width: thin;
-    scrollbar-color: rgb(42 53 71) transparent;
+  .btn-warn:hover:not(:disabled) {
+    background: var(--warn-bg);
   }
-  .scroll-thin::-webkit-scrollbar {
-    width: 7px;
-    height: 7px;
+
+  .input {
+    width: 100%;
+    border-radius: 9px;
+    border: 1px solid var(--line);
+    background: var(--bg);
+    padding: 9px 11px;
+    font-size: 14px;
+    color: var(--text);
+    outline: none;
   }
-  .scroll-thin::-webkit-scrollbar-thumb {
-    @apply rounded-full bg-base-600;
+  .input:focus {
+    border-color: var(--accent);
   }
-  .scroll-thin::-webkit-scrollbar-track {
-    background: transparent;
+
+  .mode {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border-radius: 11px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    padding: 10px 12px;
+    text-align: left;
+    font-size: 13px;
+    color: var(--text);
+    transition: background-color 0.15s, border-color 0.15s;
+  }
+  .mode:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .mode-on {
+    border-color: var(--accent);
+    background: var(--accent-bg);
+    color: var(--accent);
+  }
+  .mode-on-live {
+    border-color: var(--down);
+    background: var(--down-bg);
+    color: var(--down);
+  }
+
+  .range {
+    width: 100%;
+    height: 4px;
+    appearance: none;
+    border-radius: 999px;
+    background: var(--line);
+    outline: none;
+  }
+  .range::-webkit-slider-thumb {
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--card);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    cursor: pointer;
+  }
+  .range::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--card);
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
   }
 }
 
-/* Reduce motion for users who ask for it; the dashboard is information-dense
-   enough without animation. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+code {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.9em;
+  background: var(--chip);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
