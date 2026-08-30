@@ -142,6 +142,12 @@ export default function App() {
                 {c.barrierSource ? ` · ${barrierSourceLabel(c.barrierSource)}` : ''}
               </div>
             ) : null}
+            {s.price ? (
+              <div className="num mt-1 text-xs text-[var(--muted)]">
+                updated {Math.max(0, Math.round((Date.now() - s.priceAt) / 1000))}s ago
+                {s.priceSource ? ` · ${barrierSourceLabel(s.priceSource)}` : ''}
+              </div>
+            ) : null}
           </div>
 
           <div className="text-right">

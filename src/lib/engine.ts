@@ -76,6 +76,8 @@ export interface Snapshot {
   feedError: string | null;
   price: number | null;
   priceAt: number;
+  /** Which of the two genuine Chainlink sources the current price came from. */
+  priceSource: BarrierSource | null;
   /** Whether Polymarket's own live Chainlink relay is currently connected. */
   chainlinkLive: boolean;
   ticks: Tick[];
@@ -105,6 +107,7 @@ export class Engine {
   private bars: Bar[] = [];
   private price: number | null = null;
   private priceAt = 0;
+  private priceSource: BarrierSource | null = null;
   private chainlinkLive = false;
   private feedError: string | null = null;
   private vol = { sigma: 0, volPct: 0 };
@@ -131,7 +134,7 @@ export class Engine {
   constructor(private headers: () => Record<string, string>) {
     this.chainlinkFeed = new ChainlinkFeed({
       onTick: (tick) => {
-        this.ingestTick(tick);
+        this.ingestTick(tick, 'polymarket-live');
         this.emit();
       },
       onStatus: (connected) => {
@@ -256,6 +259,7 @@ export class Engine {
       feedError: this.feedError,
       price: this.price,
       priceAt: this.priceAt,
+      priceSource: this.priceSource,
       chainlinkLive: this.chainlinkLive,
       ticks: this.ticks.slice(-400),
       volPct: this.vol.volPct || null,
@@ -283,10 +287,11 @@ export class Engine {
    * and every number the simulation trades on is Chainlink, the same asset
    * Polymarket itself settles these markets against.
    */
-  private ingestTick(tick: Tick): void {
+  private ingestTick(tick: Tick, source: BarrierSource): void {
     if (!(tick.p > 0)) return;
     this.price = tick.p;
     this.priceAt = tick.t;
+    this.priceSource = source;
     this.feedError = null;
     this.ticks.push(tick);
     if (this.ticks.length > MAX_TICKS) this.ticks = this.ticks.slice(-MAX_TICKS);
@@ -317,7 +322,7 @@ export class Engine {
       if (!res.ok) throw new Error(`chainlink ${res.status}`);
       const d = (await res.json()) as { price?: number | null };
       if (!d.price) throw new Error('no chainlink price');
-      if (!this.chainlinkFeed.latest()) this.ingestTick({ t: Date.now(), p: d.price });
+      if (!this.chainlinkFeed.latest()) this.ingestTick({ t: Date.now(), p: d.price }, 'polymarket-onchain');
       this.emit();
     } catch (err) {
       if (this.price === null) this.feedError = msg(err);

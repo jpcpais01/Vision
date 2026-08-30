@@ -30,7 +30,14 @@ const BACKOFF_MS = [1000, 2000, 5000, 10000, 20000];
 interface RtdsMessage {
   topic?: string;
   type?: string;
-  payload?: { symbol?: string; timestamp?: number; value?: number };
+  payload?: {
+    symbol?: string;
+    timestamp?: number;
+    value?: number;
+    // The server sends one of these right after a filtered subscription is
+    // acknowledged — a short historical burst rather than a single point.
+    data?: { timestamp?: number; value?: number }[];
+  };
 }
 
 export interface ChainlinkFeedOptions {
@@ -70,6 +77,12 @@ export class ChainlinkFeed {
 
   hasEverConnected(): boolean {
     return this.everConnected;
+  }
+
+  private emitTick(tick: Tick): void {
+    this.lastTick = tick;
+    this.everConnected = true;
+    this.opts.onTick(tick);
   }
 
   private setConnected(v: boolean): void {
@@ -130,13 +143,22 @@ export class ChainlinkFeed {
           return; // a stray non-JSON frame (e.g. a text pong) — not fatal
         }
         const p = parsed.payload;
-        if (!p || typeof p.value !== 'number' || !(p.value > 0)) return;
+        if (!p) return;
         if (p.symbol && p.symbol !== SYMBOL) return;
 
-        const tick: Tick = { t: typeof p.timestamp === 'number' ? p.timestamp : Date.now(), p: p.value };
-        this.lastTick = tick;
-        this.everConnected = true;
-        this.opts.onTick(tick);
+        if (Array.isArray(p.data)) {
+          // The initial snapshot after subscribing — ingest every point so
+          // there is real history on the tape immediately, not just a single
+          // number, in the same order the server sent it.
+          for (const point of p.data) {
+            if (typeof point.value !== 'number' || !(point.value > 0)) continue;
+            this.emitTick({ t: typeof point.timestamp === 'number' ? point.timestamp : Date.now(), p: point.value });
+          }
+          return;
+        }
+
+        if (typeof p.value !== 'number' || !(p.value > 0)) return;
+        this.emitTick({ t: typeof p.timestamp === 'number' ? p.timestamp : Date.now(), p: p.value });
       };
 
       ws.onerror = () => {
