@@ -109,6 +109,8 @@ export class Engine {
   private priceAt = 0;
   private priceSource: BarrierSource | null = null;
   private chainlinkLive = false;
+  /** Guards against overlapping polls if an RPC call runs long. */
+  private chainlinkPolling = false;
   private feedError: string | null = null;
   private vol = { sigma: 0, volPct: 0 };
 
@@ -169,10 +171,10 @@ export class Engine {
     this.chainlinkFeed.start();
     await this.pollChainlink(); // get a genuine price on the board immediately, don't wait on the live relay to connect
 
-    this.timers.push(setInterval(() => this.emit(), 1000)); // ticks the countdowns; prices arrive via ingestTick, not a poll
+    this.timers.push(setInterval(() => this.emit(), 1000)); // ticks the countdowns; prices also arrive via ingestTick
     this.timers.push(setInterval(() => void this.pollMarket(), 3000));
     this.timers.push(setInterval(() => this.step(), 250));
-    this.timers.push(setInterval(() => void this.pollChainlink(), 30_000));
+    this.timers.push(setInterval(() => void this.pollChainlink(), 1000));
     this.timers.push(setInterval(() => void this.flush(), 5000));
     this.emit();
   }
@@ -309,14 +311,18 @@ export class Engine {
   }
 
   /**
-   * Runs every 30 seconds, market open or not — the free on-chain Chainlink
-   * aggregator. Only actually folded into the tape when the live relay
-   * doesn't have anything fresher: it is a genuine oracle read but a slow
-   * one (a 0.5% deviation or an hourly heartbeat), so letting it overwrite a
-   * live relay tick would make the tape worse, not better.
+   * Polled once a second, market open or not — the free on-chain Chainlink
+   * aggregator. Its own stored value only actually changes on a 0.5%
+   * deviation or an hourly heartbeat, so most of these polls re-read the
+   * same round; polling every second rather than every 30s just means a
+   * real change is reflected within ~1s of landing on-chain instead of up
+   * to 30s late. Only actually folded into the tape when the live relay
+   * doesn't have anything fresher: it is a genuine oracle read, but letting
+   * it overwrite a live relay tick would make the tape worse, not better.
    */
   private async pollChainlink(): Promise<void> {
-    if (!this.running) return;
+    if (!this.running || this.chainlinkPolling) return;
+    this.chainlinkPolling = true;
     try {
       const res = await fetch('/api/chainlink', { headers: this.headers(), cache: 'no-store' });
       if (!res.ok) throw new Error(`chainlink ${res.status}`);
@@ -327,6 +333,8 @@ export class Engine {
     } catch (err) {
       if (this.price === null) this.feedError = msg(err);
       this.emit();
+    } finally {
+      this.chainlinkPolling = false;
     }
   }
 
