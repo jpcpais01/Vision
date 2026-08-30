@@ -98,8 +98,8 @@ export interface Trade {
   error?: string;
 }
 
-/** Where a captured barrier came from — always a genuine CoinGecko read, never approximated. */
-export type BarrierSource = 'coingecko';
+/** Where a captured barrier came from, most trustworthy (freshest) first. Always a genuine read — never approximated. */
+export type BarrierSource = 'binance' | 'coingecko';
 
 /** One completed 5-minute window, traded or not. */
 export interface WindowRecord {

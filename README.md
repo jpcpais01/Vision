@@ -18,9 +18,11 @@ minutes than it is right now? Vision plays one cycle per window.
    already in progress — the whole bet is measured against the price at the
    open, and joining late means guessing that number.
 3. **Fetch the barrier — never guess it.** At the open, the price to beat is
-   the freshest **CoinGecko** price already on hand (see "About the price
-   feed" below) — never a separate fetch, never anything else. If there is
-   no price yet, the window is sat out rather than trading on a guess.
+   the freshest genuine price already on hand — Binance's live trade stream
+   when connected, CoinGecko's cross-exchange index otherwise (see "About the
+   price feed" below) — never a separate fetch, never anything else. If
+   there is no price yet, the window is sat out rather than trading on a
+   guess.
 4. **Run the only model there is.** A driftless Monte Carlo: `paths` random
    walks are simulated forward from the *current* price, using the plain
    average realised volatility of the last 10 15-second candles, for however
@@ -50,26 +52,37 @@ real deployment, not just from this development sandbox.
   once actually deployed, for reasons that could not be diagnosed without
   network access to it.
 
-So this now uses **CoinGecko**: a free, well-known price index that
-aggregates BTC/USD across many exchanges — not one exchange's own tape, not
-a guess, but also not the exact feed Polymarket itself settles on.
+CoinGecko was tried next as the sole source and it does work reliably, but
+its public index itself only refreshes its cached value roughly every
+30–60 seconds — polling it faster than that just re-reads the same number,
+so the price sat visibly still between real changes even though it was
+correctly connected.
 
-```
-https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd
-```
+So this now uses two sources together, in the same live-feed-plus-fallback
+shape as every other layer of this app:
 
-The engine polls this every 2 seconds (`src/lib/coingecko.ts`, via
-`/api/coingecko`) as its **only** price source — the barrier, the live price
-on screen, and the tape the volatility estimate and chart are built from all
-come from it. CoinGecko has no free push/streaming option, so there is no
-separate "live" connection to track; the poll loop is the whole feed. It
-works with no key at a low rate limit; setting `COINGECKO_API_KEY` (a free
-Demo key from coingecko.com, no payment) raises the limit and is what let
-polling move from a 5–10s interval down to 2s.
+- **Binance's public trade stream** (`wss://stream.binance.com:9443/ws/btcusdt@trade`)
+  — free, no key, genuinely continuous, sub-second updates. This is one
+  exchange's own tape, not a cross-exchange aggregate, but it is the only
+  free way to get real second-to-second movement. Primary source whenever
+  connected.
+- **CoinGecko's index** (`https://api.coingecko.com/api/v3/simple/price`) —
+  the cross-exchange aggregate from above, polled every 2 seconds. Only
+  actually used when Binance's stream has nothing fresh; never blended or
+  averaged with it.
 
-> Endpoint, query params, the `x-cg-demo-api-key` header, and the response
-> shape are all taken directly from CoinGecko's own `coingecko-typescript`
-> client source on GitHub — not guessed.
+Both feed the same tape (`src/lib/binanceFeed.ts`, `src/lib/coingecko.ts`) —
+the barrier, the live price on screen, and the volatility/chart data all
+come from whichever of the two answered most recently, and every window's
+history records which one it actually was (`barrierSource`), so a fallback
+is always visible, never silent. CoinGecko works with no key at a low rate
+limit; setting `COINGECKO_API_KEY` (a free Demo key from coingecko.com, no
+payment) raises the limit.
+
+> Both feeds' endpoints, message shapes, and (for CoinGecko) the
+> `x-cg-demo-api-key` header are taken directly from Binance's own
+> `binance-spot-api-docs` and CoinGecko's own `coingecko-typescript` client
+> source on GitHub — not guessed.
 
 ## Setup
 
@@ -128,7 +141,8 @@ Five things, all on sliders, plus the mode:
 
 ```
 src/lib/
-  coingecko.ts       the only price source (BTC/USD index)
+  binanceFeed.ts     the live price (browser WebSocket)
+  coingecko.ts       the fallback price (BTC/USD index)
   market.ts          finding the live 5-minute market
   book.ts            order book maths, and the paper fill model
   clob.ts            Polymarket reads
@@ -160,13 +174,15 @@ fields would have produced the wrong window).
 
 - **The tab must stay open.** The loop runs in the browser. Closing it stops
   trading, which is the safer default anyway.
-- **The price is CoinGecko's index, not Chainlink Data Streams.** Polymarket
+- **The price is Binance's own tape, not Chainlink Data Streams.** Polymarket
   settles on the latter, which needs paid credentials to read for free.
-  CoinGecko tracks the same asset closely but is not guaranteed to agree to
-  the cent at the boundary of a very close window.
-- **The tape updates every 2 seconds, not continuously.** CoinGecko has no
-  free push/streaming option, so this is a poll loop, not a live feed. Without
-  `COINGECKO_API_KEY` the free rate limit may force this slower still.
+  Binance tracks the same asset closely but is one exchange's price, not a
+  cross-exchange aggregate, and is not guaranteed to agree to the cent at
+  the boundary of a very close window.
+- **If Binance's stream never connects in a deployment**, the tape falls
+  back to CoinGecko's cross-exchange index polled every 2s — accurate, but
+  its own underlying value only actually changes roughly every 30–60s, so
+  the price can sit visibly still between real moves in that mode.
 - **The edge may not exist.** A five-minute Bitcoin binary is close to a coin
   flip and Polymarket's book is not naive. Run paper mode until the numbers say
   something before risking real money.

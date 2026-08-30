@@ -17,6 +17,7 @@ import { CALIBRATION_MIN_SEC, DEFAULT_CONFIG, HISTORY_MIN, WINDOW_SEC } from './
 import { bucket, trim, volatility } from './bars';
 import { quote } from './book';
 import { simulate } from './montecarlo';
+import { BinanceFeed } from './binanceFeed';
 
 /**
  * ── The loop ─────────────────────────────────────────────────────────────────
@@ -75,8 +76,10 @@ export interface Snapshot {
   feedError: string | null;
   price: number | null;
   priceAt: number;
-  /** Always 'coingecko' once a price has arrived — kept for a consistent, honest label in the UI and history. */
+  /** Which source the current price actually came from. */
   priceSource: BarrierSource | null;
+  /** Whether Binance's live trade stream is currently connected. */
+  binanceLive: boolean;
   ticks: Tick[];
   volPct: number | null;
   cycle: Cycle;
@@ -105,6 +108,7 @@ export class Engine {
   private price: number | null = null;
   private priceAt = 0;
   private priceSource: BarrierSource | null = null;
+  private binanceLive = false;
   /** Guards against overlapping polls if a request runs long. */
   private coingeckoPolling = false;
   private feedError: string | null = null;
@@ -120,6 +124,7 @@ export class Engine {
   private windows: WindowRecord[] = [];
   private logs: LogLine[] = [];
 
+  private readonly binanceFeed: BinanceFeed;
   private timers: ReturnType<typeof setInterval>[] = [];
   private listeners = new Set<() => void>();
   private snapshot: Snapshot | null = null;
@@ -128,7 +133,19 @@ export class Engine {
   private seed = 1;
   private pending = { trades: new Map<string, Trade>(), windows: new Map<string, WindowRecord>() };
 
-  constructor(private headers: () => Record<string, string>) {}
+  constructor(private headers: () => Record<string, string>) {
+    this.binanceFeed = new BinanceFeed({
+      onTick: (tick) => {
+        this.ingestTick(tick, 'binance');
+        this.emit();
+      },
+      onStatus: (connected) => {
+        this.binanceLive = connected;
+        if (connected) this.log('info', 'Connected to Binance’s live trade stream');
+        this.emit();
+      },
+    });
+  }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -151,14 +168,15 @@ export class Engine {
       `Started in ${config.mode} mode. Calibrating for ${CALIBRATION_MIN_SEC / 60} minutes before the first trade.`
     );
 
-    await this.pollCoingecko(); // get a genuine price on the board before anything else runs
+    this.binanceFeed.start();
+    await this.pollCoingecko(); // get a genuine price on the board immediately, don't wait on the stream to connect
 
-    this.timers.push(setInterval(() => this.emit(), 1000)); // ticks the countdowns between polls
+    this.timers.push(setInterval(() => this.emit(), 1000)); // ticks the countdowns; prices also arrive via ingestTick
     this.timers.push(setInterval(() => void this.pollMarket(), 3000));
     this.timers.push(setInterval(() => this.step(), 250));
-    // CoinGecko's free tier is rate-limited — 2s keeps well clear of it even
-    // without an API key, while still refreshing much faster than the 30s a
-    // naive "stay safe" interval would need.
+    // The CoinGecko fallback: only actually used when Binance's live stream
+    // has nothing fresh, but still polled regularly so a stream drop doesn't
+    // leave the tape stuck. 2s keeps well clear of CoinGecko's free rate limit.
     this.timers.push(setInterval(() => void this.pollCoingecko(), 2000));
     this.timers.push(setInterval(() => void this.flush(), 5000));
     this.emit();
@@ -167,6 +185,7 @@ export class Engine {
   stop(): void {
     if (!this.running) return;
     this.running = false;
+    this.binanceFeed.stop();
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     this.cycle = { ...this.cycle, phase: 'stopped' };
@@ -239,12 +258,14 @@ export class Engine {
     return {
       running: this.running,
       config: this.config,
-      // Polled every 2s; 10s is a generous cushion before flapping to "offline".
-      connected: this.price !== null && now - this.priceAt < 10_000,
+      // The live stream ticks continuously; the CoinGecko fallback is polled every 2s.
+      // 10s is a generous cushion before flapping to "offline".
+      connected: this.binanceLive || (this.price !== null && now - this.priceAt < 10_000),
       feedError: this.feedError,
       price: this.price,
       priceAt: this.priceAt,
       priceSource: this.priceSource,
+      binanceLive: this.binanceLive,
       ticks: this.ticks.slice(-400),
       volPct: this.vol.volPct || null,
       cycle: this.cycle,
@@ -265,16 +286,16 @@ export class Engine {
   // ── Price ─────────────────────────────────────────────────────────────────
 
   /**
-   * Fold one genuine CoinGecko price observation into the tape — the only
-   * way `this.price`, `this.ticks` and `this.bars` are ever updated. Every
+   * Fold one genuine price observation into the tape — the only way
+   * `this.price`, `this.ticks` and `this.bars` are ever updated. Every
    * number on screen and every number the simulation trades on comes from
-   * this one source, a real cross-exchange aggregate, never a guess.
+   * one of two real sources (see `source`), never a guess.
    */
-  private ingestTick(tick: Tick): void {
+  private ingestTick(tick: Tick, source: BarrierSource): void {
     if (!(tick.p > 0)) return;
     this.price = tick.p;
     this.priceAt = tick.t;
-    this.priceSource = 'coingecko';
+    this.priceSource = source;
     this.feedError = null;
     this.ticks.push(tick);
     if (this.ticks.length > MAX_TICKS) this.ticks = this.ticks.slice(-MAX_TICKS);
@@ -292,9 +313,12 @@ export class Engine {
   }
 
   /**
-   * The engine's only price poll, market open or not. CoinGecko has no free
-   * push/streaming option, so this interval is the entire live feed — see
-   * `start()` for why it runs every 2s rather than every 1s.
+   * Polled every 2s, market open or not — CoinGecko's cross-exchange index.
+   * Only actually folded into the tape when Binance's live stream doesn't
+   * have anything fresher: it is an equally genuine read, but letting it
+   * overwrite a live tick would make the tape worse, not better. Mainly
+   * exists so the app has a real price the instant it starts, and keeps
+   * working smoothly through any stream reconnect.
    */
   private async pollCoingecko(): Promise<void> {
     if (!this.running || this.coingeckoPolling) return;
@@ -304,7 +328,7 @@ export class Engine {
       if (!res.ok) throw new Error(`coingecko ${res.status}`);
       const d = (await res.json()) as { price?: number | null };
       if (!d.price) throw new Error('no coingecko price');
-      this.ingestTick({ t: Date.now(), p: d.price });
+      if (!this.binanceFeed.latest()) this.ingestTick({ t: Date.now(), p: d.price }, 'coingecko');
       this.emit();
     } catch (err) {
       if (this.price === null) this.feedError = msg(err);
@@ -405,25 +429,26 @@ export class Engine {
 
   /**
    * The price to beat, captured synchronously — no fetch, no delay, right at
-   * the open. `this.price` is already the freshest CoinGecko read on hand
-   * (the poll loop keeps it current), and there is no second source to try:
-   * Polymarket itself settles on Chainlink Data Streams, which needs paid
-   * credentials to read for free, and neither Polymarket's own free relay
-   * nor Pyth Network's free oracle turned out to be reachable in practice —
-   * see the README for that history. If there is no price at all yet, the
-   * window is sat out rather than trading on a guess.
+   * the open. `this.price` is already the freshest genuine read on hand
+   * (Binance's live stream when connected, CoinGecko's fallback poll
+   * otherwise — see `ingestTick`/`pollCoingecko`), so there is nothing to
+   * await here. Polymarket itself settles on Chainlink Data Streams, which
+   * needs paid credentials to read for free; neither Polymarket's own free
+   * relay nor Pyth Network's free oracle turned out to be reachable in
+   * practice — see the README for that history. If there is no price at all
+   * yet, the window is sat out rather than trading on a guess.
    */
   private begin(m: Market): void {
     this.cycle = {
       ...idleCycle('tracking'),
       market: m,
       barrier: this.price,
-      barrierSource: this.price !== null ? 'coingecko' : null,
+      barrierSource: this.priceSource,
     };
     this.log(
       this.price !== null ? 'info' : 'warn',
       this.price !== null
-        ? `Window open. Barrier $${this.price.toFixed(2)} (CoinGecko)`
+        ? `Window open. Barrier $${this.price.toFixed(2)} (${barrierSourceLabel(this.priceSource)})`
         : 'Window opened with no genuine price available — sitting this one out'
     );
     this.emit(true);
@@ -733,6 +758,10 @@ function idleCycle(phase: Phase): Cycle {
     skipReason: null,
     track: [],
   };
+}
+
+function barrierSourceLabel(s: BarrierSource | null): string {
+  return s === 'binance' ? "Binance's live stream" : 'CoinGecko';
 }
 
 function msg(e: unknown): string {

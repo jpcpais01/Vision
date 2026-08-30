@@ -6,7 +6,7 @@ import { WINDOW_SEC, CALIBRATION_MIN_SEC } from '@/lib/config';
 import { PriceChart, ProbChart } from '@/components/Charts';
 import { Settings } from '@/components/Settings';
 import { clock, cx, pct, pts, signed, time, usd } from '@/lib/format';
-import type { Quote, Side } from '@/lib/types';
+import type { BarrierSource, Quote, Side } from '@/lib/types';
 
 export default function App() {
   const v = useEngine();
@@ -46,10 +46,7 @@ export default function App() {
           </span>
         </div>
 
-        <span
-          className="flex items-center gap-1.5 text-xs text-[var(--muted)]"
-          title="CoinGecko — a free, aggregated BTC/USD price index"
-        >
+        <span className="flex items-center gap-1.5 text-xs text-[var(--muted)]">
           <span
             className={cx(
               'h-1.5 w-1.5 rounded-full',
@@ -57,6 +54,14 @@ export default function App() {
             )}
           />
           {s.connected ? 'live' : s.running ? 'connecting' : 'offline'}
+        </span>
+
+        <span
+          className="flex items-center gap-1.5 text-xs text-[var(--muted)]"
+          title="Binance's live trade stream — real second-to-second BTC/USD movement"
+        >
+          <span className={cx('h-1.5 w-1.5 rounded-full', s.binanceLive ? 'bg-[var(--up)]' : 'bg-[var(--line)]')} />
+          Binance {s.binanceLive ? 'live' : 'offline'}
         </span>
 
         <div className="ml-auto flex items-center gap-2">
@@ -134,13 +139,13 @@ export default function App() {
             {c.barrier ? (
               <div className="num mt-1 text-xs text-[var(--muted)]">
                 needs to beat {usd(c.barrier)}
-                {c.barrierSource ? ' · CoinGecko' : ''}
+                {c.barrierSource ? ` · ${barrierSourceLabel(c.barrierSource)}` : ''}
               </div>
             ) : null}
             {s.price ? (
               <div className="num mt-1 text-xs text-[var(--muted)]">
                 updated {Math.max(0, Math.round((Date.now() - s.priceAt) / 1000))}s ago
-                {s.priceSource ? ' · CoinGecko' : ''}
+                {s.priceSource ? ` · ${barrierSourceLabel(s.priceSource)}` : ''}
               </div>
             ) : null}
           </div>
@@ -186,7 +191,7 @@ export default function App() {
             Press <strong className="text-[var(--text)]">Start</strong> and it spends
             {' '}{CALIBRATION_MIN_SEC / 60} minute{CALIBRATION_MIN_SEC === 60 ? '' : 's'} gathering real price data, then waits for the
             next 5-minute window to open — it never joins one already running. The barrier is
-            the freshest CoinGecko price on hand at the open, never guessed, and a driftless
+            the freshest genuine price on hand at the open, never guessed, and a driftless
             Monte Carlo simulation re-checks the odds against the live price every second. It
             buys only when that beats the market’s own price by enough to be worth it.
           </p>
@@ -348,10 +353,10 @@ export default function App() {
       </section>
 
       <p className="px-1 text-center text-xs leading-relaxed text-[var(--muted)]">
-        Every price on this screen is from CoinGecko — a free, public index aggregating BTC/USD
-        across many exchanges, not one exchange’s own tape. Polymarket itself settles on Chainlink
-        Data Streams, which needs paid credentials to read directly; this is the closest free,
-        genuinely aggregated substitute. There is no forecasting model —
+        Live prices come from Binance’s trade stream — real second-to-second BTC/USD movement,
+        continuously, for free. If that stream ever drops, CoinGecko’s cross-exchange index fills
+        in until it reconnects. Polymarket itself settles on Chainlink Data Streams, which needs
+        paid credentials to read directly. There is no forecasting model —
         only a driftless Monte Carlo over realised volatility. Paper mode simulates fills against
         the real order book. Not financial advice.
       </p>
@@ -397,6 +402,10 @@ function SideRead({
       </div>
     </div>
   );
+}
+
+function barrierSourceLabel(s: BarrierSource): string {
+  return s === 'binance' ? "Binance's live stream" : 'CoinGecko';
 }
 
 function phaseLabel(s: ReturnType<typeof useEngine>['snapshot']): string {
