@@ -7,7 +7,6 @@ import { normCdf, normInv } from '../math/normal';
 import { NormalSampler, Rng } from '../math/rng';
 import { fillGaps, returns, shiftBars, shiftTicks, toBars, volatility } from '../bars';
 import { fill, quote } from '../book';
-import { parse, forecast, buildPrompt } from '../llm';
 import { discover } from '../market';
 import { DEFAULT_CONFIG, sanitize } from '../config';
 import type { Bar } from '../types';
@@ -34,7 +33,7 @@ test('the sampler produces unit-variance draws', () => {
   assert.ok(Math.abs(sq / n - 1) < 0.03);
 });
 
-// ── The updater ─────────────────────────────────────────────────────────────
+// ── The only model: a driftless Monte Carlo ─────────────────────────────────
 
 const SIGMA = 0.00002; // roughly 35% annualised
 
@@ -43,8 +42,6 @@ function sim(over: Partial<Parameters<typeof simulate>[0]> = {}) {
     barrier: 100_000,
     current: 100_000,
     remainingSec: 300,
-    llmPUp: 0.5,
-    llmWeight: 1,
     sigma: SIGMA,
     paths: 40_000,
     seed: 7,
@@ -52,47 +49,40 @@ function sim(over: Partial<Parameters<typeof simulate>[0]> = {}) {
   });
 }
 
-test('at the barrier with no view, the answer is a coin flip', () => {
+test('at the barrier, with nothing else known, the answer is a coin flip', () => {
   assert.ok(Math.abs(sim().pUp - 0.5) < 0.01);
 });
 
-test('the model probability is reproduced when the full window remains', () => {
-  // This is the definition of the drift solve: with the whole window left and
-  // full weight, the simulation should return the prior it was given.
-  for (const p of [0.6, 0.7, 0.4]) {
-    const r = sim({ llmPUp: p });
-    assert.ok(Math.abs(r.pUp - p) < 0.02, `expected ~${p}, got ${r.pUp.toFixed(3)}`);
+test('there is no drift term — an identical run has nothing to disagree with', () => {
+  // The whole point of removing the forecasting step: the simulation takes no
+  // view of its own. Two runs with the same inputs and the same seed must be
+  // identical, and a run started exactly at the barrier has no reason to lean
+  // either way regardless of how many times it is re-seeded.
+  for (const seed of [1, 2, 3, 4, 5]) {
+    const r = sim({ seed });
+    assert.ok(Math.abs(r.pUp - 0.5) < 0.02, `seed ${seed}: expected ~0.5, got ${r.pUp}`);
   }
 });
 
-test('a move against the call overrules it', () => {
-  // "UP at 75%", but BTC is $150 down with 30 seconds left. The recovery needed
-  // is not plausible at this volatility, so the answer must collapse.
-  const r = sim({ current: 99_850, remainingSec: 30, llmPUp: 0.75 });
-  assert.ok(r.pUp < 0.05, `expected a low probability, got ${r.pUp}`);
+test('being above the barrier means P(UP) is above a half, and vice versa', () => {
+  // A move small relative to sigma*sqrt(t), so both cases land meaningfully
+  // between 0 and 1 rather than saturating at the extremes.
+  const above = sim({ current: 100_010, remainingSec: 120 });
+  const below = sim({ current: 99_990, remainingSec: 120 });
+  assert.ok(above.pUp > 0.5, `expected > 0.5, got ${above.pUp}`);
+  assert.ok(below.pUp < 0.5, `expected < 0.5, got ${below.pUp}`);
+  assert.ok(
+    Math.abs(above.pUp - (1 - below.pUp)) < 0.02,
+    `expected roughly symmetric cases, got ${above.pUp} vs ${1 - below.pUp}`
+  );
 });
 
-test('a move with the call reinforces it', () => {
-  const r = sim({ current: 100_120, remainingSec: 60, llmPUp: 0.6 });
-  assert.ok(r.pUp > 0.9, `expected a high probability, got ${r.pUp}`);
-});
-
-test('the neutral control ignores the model but shares its randomness', () => {
-  const r = sim({ llmPUp: 0.8 });
-  assert.ok(r.pUp > 0.7, 'the primed run should follow the prior');
-  assert.ok(Math.abs(r.pUpNeutral - 0.5) < 0.02, 'the control should not');
-
-  // With no view, the two must agree — same shocks, same drift of zero.
-  const flat = sim({ llmPUp: 0.5 });
-  assert.ok(Math.abs(flat.pUp - flat.pUpNeutral) < 0.005);
-});
-
-test('the model weight scales its influence', () => {
-  const full = sim({ llmPUp: 0.7, llmWeight: 1 });
-  const half = sim({ llmPUp: 0.7, llmWeight: 0.5 });
-  const none = sim({ llmPUp: 0.7, llmWeight: 0 });
-  assert.ok(full.pUp > half.pUp && half.pUp > none.pUp);
-  assert.ok(Math.abs(none.pUp - 0.5) < 0.02, 'zero weight means the call is ignored');
+test('the same distance from the barrier matters less with less time left', () => {
+  // A given gap is easier to hold onto (or harder to close) the less time
+  // there is left for volatility to erase it.
+  const early = sim({ current: 100_100, remainingSec: 280 });
+  const late = sim({ current: 100_100, remainingSec: 20 });
+  assert.ok(late.pUp > early.pUp, `expected less time to raise confidence: ${late.pUp} vs ${early.pUp}`);
 });
 
 test('more volatility pulls a winning position back toward even', () => {
@@ -149,6 +139,18 @@ test('volatility recovers a known sigma and is not fooled by a flat series', () 
 
   const empty = volatility([]);
   assert.ok(empty.sigma > 0, 'never zero — that would make every edge look infinite');
+});
+
+test('30 minutes of real 10-second bars easily clears the 10-return floor', () => {
+  // The engine requires CALIBRATION_MIN_SEC (5 minutes) of live ticks before
+  // it will trade its first window. At one bar per 10 seconds that is 30
+  // bars — comfortably past the point where volatility() stops using its
+  // generic fallback and starts reading the real tape.
+  const bars: Bar[] = Array.from({ length: 30 }, (_, i) => ({ t: i * 10_000, c: 100_000 + i * 3 }));
+  const est = volatility(bars);
+  assert.ok(est.sigma > 0);
+  // A steadily rising series with no noise has a real, tiny, non-fallback sigma.
+  assert.ok(est.volPct < 45, `expected a real estimate below the 45% fallback, got ${est.volPct}`);
 });
 
 // ── Chainlink anchor offset ─────────────────────────────────────────────────
@@ -214,129 +216,6 @@ test('a paper fill walks real depth and reports shortfalls honestly', () => {
 
   assert.equal(fill(book, 10_000, 0.001).shares, 240, 'cannot fill beyond the book');
   assert.equal(fill({ ...book, asks: [] }, 10).shares, 0);
-});
-
-// ── Forecast parsing ────────────────────────────────────────────────────────
-
-test('the forecast reply is parsed in the shapes models actually emit', () => {
-  const clean = parse('{"direction":"UP","probability":62}');
-  assert.deepEqual(clean, { side: 'UP', probability: 0.62, pUp: 0.62 });
-
-  const down = parse('{"direction":"DOWN","probability":58}');
-  assert.equal(down?.side, 'DOWN');
-  assert.ok(Math.abs(down!.pUp - 0.42) < 1e-9, 'pUp is the complement for a DOWN call');
-
-  assert.equal(parse('```json\n{"direction":"up","probability":0.55}\n```')?.side, 'UP');
-  assert.equal(parse('Here you go: {"direction":"lower","probability":70}')?.side, 'DOWN');
-  assert.equal(parse('{"direction":"UP","probability":99}')?.probability, 0.95, 'swagger is capped');
-});
-
-test('a malformed reply is rejected rather than guessed at', () => {
-  // These numbers size real orders; coercing nonsense would fabricate a call.
-  assert.equal(parse('{"direction":"UP","probability":30}'), null, 'below 50 contradicts the direction');
-  assert.equal(parse('{"direction":"MAYBE","probability":60}'), null);
-  assert.equal(parse('{"probability":60}'), null, 'no direction, no trade');
-  assert.equal(parse('I cannot help with that.'), null);
-});
-
-test('the prompt carries the tape and the current price', () => {
-  const bars: Bar[] = Array.from({ length: 200 }, (_, i) => ({ t: i * 10_000, c: 100_000 + i }));
-  const p = buildPrompt(bars, 100_250);
-  assert.ok(p.includes('100250.00'), 'the current price must be stated');
-  const series = p.split('\n').find((l) => /^[\d.,]+$/.test(l));
-  assert.equal(series?.split(',').length, 180, '30 minutes of 10-second closes');
-});
-
-// ── The forecast call, against a stand-in server ────────────────────────────
-
-async function withServer(
-  handler: (body: Record<string, unknown>, n: number) => { status: number; json: unknown; delayMs?: number },
-  run: (url: string, seen: Record<string, unknown>[]) => Promise<void>
-) {
-  const seen: Record<string, unknown>[] = [];
-  let n = 0;
-  const server = createServer((req, res) => {
-    let raw = '';
-    req.on('data', (c) => (raw += c));
-    req.on('end', () => {
-      const body = JSON.parse(raw || '{}');
-      seen.push(body);
-      const r = handler(body, n++);
-      const send = () => {
-        res.writeHead(r.status, { 'content-type': 'application/json' });
-        res.end(JSON.stringify(r.json));
-      };
-      if (r.delayMs) setTimeout(send, r.delayMs);
-      else send();
-    });
-  });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-  const { port } = server.address() as AddressInfo;
-  try {
-    await run(`http://127.0.0.1:${port}/v1`, seen);
-  } finally {
-    await new Promise<void>((r) => server.close(() => r()));
-  }
-}
-
-const REPLY = (content: string) => ({
-  model: 'test',
-  choices: [{ message: { content }, finish_reason: 'stop' }],
-});
-const GOOD = '{"direction":"UP","probability":61}';
-const BARS: Bar[] = Array.from({ length: 190 }, (_, i) => ({ t: i * 10_000, c: 100_000 }));
-
-test('a good reply comes back parsed, with reasoning turned off', async () => {
-  await withServer(
-    () => ({ status: 200, json: REPLY(GOOD) }),
-    async (url, seen) => {
-      const f = await forecast(BARS, 100_000, { apiKey: 'k', model: 'test', baseUrl: url });
-      assert.equal(f.side, 'UP');
-      assert.equal(f.probability, 0.61);
-      assert.equal(seen.length, 1);
-      assert.deepEqual(seen[0].reasoning, { effort: 'none', exclude: true });
-      assert.ok((seen[0].max_tokens as number) >= 500, 'room for the answer if it reasons anyway');
-    }
-  );
-});
-
-test('an empty reply retries once without the reasoning field', async () => {
-  await withServer(
-    (_b, n) => ({ status: 200, json: REPLY(n === 0 ? '' : GOOD) }),
-    async (url, seen) => {
-      const f = await forecast(BARS, 100_000, { apiKey: 'k', model: 'test', baseUrl: url });
-      assert.equal(f.side, 'UP');
-      assert.equal(seen.length, 2);
-      assert.equal(seen[1].reasoning, undefined);
-    }
-  );
-});
-
-test('the timeout is a budget for the whole call, not for each attempt', async () => {
-  const budget = 2500;
-  const started = Date.now();
-  await withServer(
-    () => ({ status: 200, json: REPLY(''), delayMs: 6000 }),
-    async (url) => {
-      await assert.rejects(
-        forecast(BARS, 100_000, { apiKey: 'k', model: 'test', baseUrl: url, timeoutMs: budget })
-      );
-    }
-  );
-  assert.ok(Date.now() - started < budget * 1.7, 'attempts must share one deadline');
-});
-
-test('a bad key fails immediately instead of burning the budget', async () => {
-  await withServer(
-    () => ({ status: 401, json: { error: { message: 'no credit' } } }),
-    async (url, seen) => {
-      await assert.rejects(
-        forecast(BARS, 100_000, { apiKey: 'bad', model: 'test', baseUrl: url }),
-        /401/
-      );
-      assert.equal(seen.length, 1, 'a 401 will not fix itself on retry');
-    }
-  );
 });
 
 // ── Market discovery ────────────────────────────────────────────────────────
@@ -467,18 +346,15 @@ test('falls back to a listing search when the grid produces nothing', async () =
 // ── Config ──────────────────────────────────────────────────────────────────
 
 test('config is clamped on write', () => {
-  const c = sanitize({ minEdge: 5, stakeUsd: -10, llmWeight: 99, paths: 10_000_000 });
+  const c = sanitize({ minEdge: 5, stakeUsd: -10, paths: 10_000_000 });
   assert.ok(c.minEdge <= 0.5);
   assert.ok(c.stakeUsd >= 1);
-  assert.ok(c.llmWeight <= 1);
   assert.ok(c.paths <= 50_000);
   assert.equal(sanitize({ mode: 'HACK' }).mode, DEFAULT_CONFIG.mode);
   assert.equal(sanitize({ autoTrade: 'yes' }).autoTrade, DEFAULT_CONFIG.autoTrade);
 });
 
 test('the defaults let a trade happen at all', () => {
-  // The old build shipped gates that could never be satisfied together. The
-  // rule is now one comparison, so this just confirms it is reachable.
   const c = DEFAULT_CONFIG;
   assert.ok(c.minEdge > 0 && c.minEdge < 0.5);
   assert.ok(c.minSecondsLeft < 300, 'must leave room inside the window to enter');

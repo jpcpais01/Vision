@@ -1,29 +1,24 @@
 import type { Simulation } from './types';
-import { normInv } from './math/normal';
 import { NormalSampler, Rng } from './math/rng';
 
+const SECONDS_PER_YEAR = 365 * 24 * 3600;
+
 /**
- * ── The updater ──────────────────────────────────────────────────────────────
+ * ── The only model ───────────────────────────────────────────────────────────
  *
- * The model answered a question about the whole five minutes, at second zero.
- * By the time its answer arrived, Bitcoin had already moved — and it keeps
- * moving for the rest of the window. This turns that stale opinion into a live
- * probability, once a second.
+ * A driftless Monte Carlo. No view is taken on direction — nothing feeds one
+ * in. The question answered is purely: given how much Bitcoin has actually
+ * moved around in the last half hour, how far could it plausibly go in the
+ * time that's left, and what share of that range still clears the barrier?
  *
- * How: the model's probability is converted into a *drift* — the steady push
- * that would produce that probability at the measured volatility — and applied
- * only to the seconds that are left. The simulation then starts from the price
- * **now**, not from the barrier, so the part of the window that already
- * happened is the starting point rather than something to re-simulate.
+ * Mechanically: `paths` random walks are simulated forward from the *current*
+ * price (not the barrier — the part of the window that has already happened
+ * is the starting point, not something to re-simulate) for the `remainingSec`
+ * left in the window, using the realised volatility of the last 30 minutes of
+ * real ticks. `pUp` is the share that finish above the barrier.
  *
- * The consequence is the whole point of the design: a call of "UP, 70%" on a
- * window where Bitcoin has since dropped well below the barrier with a minute
- * left comes out low, because the move needed to recover in the time remaining
- * is not plausible at the current volatility.
- *
- * Every run also produces `pUpNeutral` — the identical simulation with a 50/50
- * prior. That is the control: if the model knows nothing, the two probabilities
- * score the same, and the dashboard says so.
+ * Recomputed roughly once a second for as long as a window is open, so it
+ * tracks the actual path rather than a single stale read.
  */
 
 export interface SimInput {
@@ -33,11 +28,7 @@ export interface SimInput {
   current: number;
   /** Seconds left in the window. */
   remainingSec: number;
-  /** Model's probability that the market resolves UP, 0..1. */
-  llmPUp: number;
-  /** 0 = ignore the model entirely, 1 = take it at its word. */
-  llmWeight: number;
-  /** Per-second volatility of log returns. */
+  /** Per-second volatility of log returns, from the realised tape. */
   sigma: number;
   paths: number;
   seed: number;
@@ -50,67 +41,29 @@ export function simulate(input: SimInput): Simulation {
   // Even path count: every draw is simulated mirrored as well (antithetic
   // sampling), which halves the noise for free.
   const paths = Math.max(2, Math.floor(input.paths / 2) * 2);
+  const volPct = Math.max(sigma, 0) * Math.sqrt(SECONDS_PER_YEAR) * 100;
 
   if (remainingSec <= 0 || !(barrier > 0) || !(current > 0)) {
     const settled = current > barrier ? 1 : 0;
-    return {
-      pUp: settled,
-      pUpNeutral: settled,
-      sigma,
-      volPct: sigma * Math.sqrt(365 * 24 * 3600) * 100,
-      paths: 0,
-      computeMs: Date.now() - t0,
-    };
+    return { pUp: settled, sigma, volPct, paths: 0, computeMs: Date.now() - t0 };
   }
 
   const s = Math.max(sigma, 1e-12);
-  const tau = remainingSec;
-  const sd = s * Math.sqrt(tau);
+  const sd = s * Math.sqrt(remainingSec);
 
-  // How far we are from the barrier, in log terms. Positive means we need a
-  // rally; negative means we are already in the money.
+  // Distance from here to the barrier, in log terms. Positive means the
+  // current price is below the barrier and needs a rally; negative means it
+  // is already above it.
   const gap = Math.log(barrier / current);
 
-  // Prior → drift. Solve  Phi(m * T / (sigma * sqrt(T))) = p  for m over the
-  // full 300-second window, then apply it only to the seconds remaining.
-  const p = clamp(input.llmPUp, 0.02, 0.98);
-  const drift =
-    ((s * normInv(p)) / Math.sqrt(300)) * clamp(input.llmWeight, 0, 1) * tau;
-
-  const rng = new Rng(seed);
-  const sampler = new NormalSampler(rng);
-
+  const sampler = new NormalSampler(new Rng(seed));
   let wins = 0;
-  let winsNeutral = 0;
 
   for (let i = 0; i < paths; i += 2) {
-    // Gaussian shocks, deliberately. Fat-tailed innovations are a better fit
-    // for 10-second crypto returns, but the drift above is solved from the
-    // normal quantile — mixing the two makes the simulation return something
-    // other than the prior it was given, which quietly breaks the one property
-    // that makes this auditable. One consistent distribution beats two
-    // half-matched ones.
-    const z = sampler.next();
-    const shock = sd * z;
-
-    // Both priors run on the same shocks, so the comparison between them is a
-    // clean read on the model rather than a difference in random draws.
-    if (drift + shock > gap) wins++;
-    if (drift - shock > gap) wins++;
-    if (shock > gap) winsNeutral++;
-    if (-shock > gap) winsNeutral++;
+    const shock = sd * sampler.next();
+    if (shock > gap) wins++;
+    if (-shock > gap) wins++;
   }
 
-  return {
-    pUp: wins / paths,
-    pUpNeutral: winsNeutral / paths,
-    sigma: s,
-    volPct: s * Math.sqrt(365 * 24 * 3600) * 100,
-    paths,
-    computeMs: Date.now() - t0,
-  };
-}
-
-function clamp(v: number, lo: number, hi: number): number {
-  return v < lo ? lo : v > hi ? hi : v;
+  return { pUp: wins / paths, sigma: s, volPct, paths, computeMs: Date.now() - t0 };
 }

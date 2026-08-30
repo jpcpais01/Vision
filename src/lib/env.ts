@@ -19,14 +19,6 @@ function num(name: string, fallback: number): number {
 }
 
 export const env = {
-  // LLM
-  openrouterKey: () => str('OPENROUTER_API_KEY'),
-  openrouterModel: () => str('OPENROUTER_MODEL', 'deepseek/deepseek-v4-flash-0731'),
-  openrouterBaseUrl: () =>
-    str('OPENROUTER_BASE_URL', 'https://openrouter.ai/api/v1/chat/completions'),
-  openrouterSiteUrl: () => str('OPENROUTER_SITE_URL'),
-  openrouterSiteName: () => str('OPENROUTER_SITE_NAME', 'Vision BTC 5m'),
-
   // Access control
   accessToken: () => str('VISION_ACCESS_TOKEN'),
 
@@ -42,7 +34,8 @@ export const env = {
   apiPassphrase: () => str('POLYMARKET_API_PASSPHRASE'),
   allowLive: () => bool('ALLOW_LIVE_TRADING', false),
 
-  // Chainlink
+  // Chainlink — the free on-chain aggregator, used as a fallback anchor behind
+  // Polymarket's own live relay (see chainlinkFeed.ts).
   chainlinkRpc: () => str('CHAINLINK_RPC_URL', 'https://ethereum-rpc.publicnode.com'),
   chainlinkFeed: () =>
     str('CHAINLINK_BTC_USD_FEED', '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c'),
@@ -55,12 +48,9 @@ export const env = {
 /** Capability report surfaced by /api/health so the UI can explain gaps. */
 export function capabilities() {
   return {
-    llm: env.openrouterKey().length > 0,
     liveTradingConfigured: env.privateKey().length > 0,
     liveTradingAllowed: env.allowLive(),
-    chainlink: env.chainlinkRpc().length > 0,
     durableStorage: env.upstashUrl().length > 0 && env.upstashToken().length > 0,
     accessControl: env.accessToken().length > 0,
-    model: env.openrouterModel(),
   };
 }

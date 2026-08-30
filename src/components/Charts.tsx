@@ -74,12 +74,12 @@ export function PriceChart({
   );
 }
 
-/** Our probability against what the market is charging, over the window. */
+/** The simulation's P(UP) against what the market charges for UP, over the window. */
 export function ProbChart({
   track,
   startMs,
 }: {
-  track: { t: number; ours: number; market: number | null }[];
+  track: { t: number; pUp: number; askUp: number | null; askDown: number | null }[];
   startMs: number | null;
 }) {
   const W = 800;
@@ -87,7 +87,7 @@ export function ProbChart({
   const pad = { t: 10, r: 8, b: 14, l: 8 };
 
   if (!startMs || track.length < 2) {
-    return <Placeholder height={H}>Probabilities appear once the model answers</Placeholder>;
+    return <Placeholder height={H}>Fills in once the window opens</Placeholder>;
   }
 
   const x = (t: number) =>
@@ -105,7 +105,7 @@ export function ProbChart({
       className="w-full"
       style={{ height: H }}
       role="img"
-      aria-label="Our probability against the market's price over this window."
+      aria-label="The simulation's probability of UP against the market's UP price over this window."
     >
       {[0.25, 0.5, 0.75].map((v) => (
         <line
@@ -119,8 +119,8 @@ export function ProbChart({
           strokeDasharray={v === 0.5 ? '4 4' : undefined}
         />
       ))}
-      <path d={path((p) => p.market)} fill="none" stroke={MARKET} strokeWidth="2" />
-      <path d={path((p) => p.ours)} fill="none" stroke={OURS} strokeWidth="2.5" />
+      <path d={path((p) => p.askUp)} fill="none" stroke={MARKET} strokeWidth="2" />
+      <path d={path((p) => p.pUp)} fill="none" stroke={OURS} strokeWidth="2.5" />
     </svg>
   );
 }

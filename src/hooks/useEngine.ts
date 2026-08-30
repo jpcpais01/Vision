@@ -6,11 +6,10 @@ import { DEFAULT_CONFIG, sanitize } from '@/lib/config';
 import type { Config, Trade, WindowRecord } from '@/lib/types';
 
 export interface Health {
-  capabilities: { llm: boolean; liveTradingConfigured: boolean; liveTradingAllowed: boolean };
+  capabilities: { liveTradingConfigured: boolean; liveTradingAllowed: boolean };
   liveBlockers: string[];
   storage: string;
   storageOk: boolean;
-  model: string;
 }
 
 const TOKEN_KEY = 'vision:token';
@@ -165,25 +164,26 @@ const EMPTY: Snapshot = {
   price: null,
   priceAt: 0,
   chainlinkGap: null,
-  bars: [],
+  chainlinkLive: false,
   ticks: [],
   volPct: null,
   cycle: {
     market: null,
     phase: 'stopped',
     barrier: null,
-    forecast: null,
-    forecastError: null,
+    barrierSource: null,
     sim: null,
-    ourProb: null,
-    marketProb: null,
-    edge: null,
+    askUp: null,
+    askDown: null,
+    edgeUp: null,
+    edgeDown: null,
     tradeId: null,
     skipReason: null,
     track: [],
   },
   secondsLeft: null,
   secondsToOpen: null,
+  calibratingSecondsLeft: null,
   quotes: { up: { bid: null, ask: null, askSize: 0 }, down: { bid: null, ask: null, askSize: 0 } },
   trades: [],
   windows: [],
@@ -197,9 +197,7 @@ const EMPTY: Snapshot = {
     pnl: 0,
     today: 0,
     windows: 0,
-    brierWithLlm: null,
-    brierNeutral: null,
-    llmAccuracy: null,
+    brier: null,
     scored: 0,
   },
 };

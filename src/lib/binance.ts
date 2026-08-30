@@ -1,23 +1,21 @@
 import 'server-only';
-import type { Bar, Tick } from './types';
+import type { Tick } from './types';
 import { fetchJson } from './http';
-import { fillGaps, toBars } from './bars';
 
 /**
- * ── Price data — Binance ─────────────────────────────────────────────────────
+ * ── Live price — Binance ─────────────────────────────────────────────────────
  *
- * Polymarket settles these markets on Chainlink Data Streams, which needs
- * commercial credentials, and the free on-chain Chainlink feed updates far too
- * slowly (a 0.5% deviation or an hourly heartbeat) to trade from. Binance gives
- * genuine per-second resolution for free, with no key, which is what a 10-second
- * bar series actually needs.
+ * The second-by-second tape. Polymarket settles on Chainlink Data Streams,
+ * which needs commercial credentials, and the free on-chain Chainlink feed
+ * updates far too slowly (a 0.5% deviation or an hourly heartbeat) to build a
+ * volatility estimate from. Binance gives genuine per-second data for free,
+ * with no key.
  *
- * It is one exchange's tape rather than an oracle aggregate, so at the open of
- * each window the engine reads the free on-chain Chainlink price once and
- * offsets every Binance-derived number by the difference — see
- * `Engine.computeOffset` in `engine.ts`. That keeps the level anchored to the
- * settlement oracle while all the second-to-second movement still comes from
- * Binance's real tape.
+ * There is deliberately no history fetch here. The engine does not seed a
+ * lookback window from anywhere — it accumulates its own rolling 30 minutes of
+ * real ticks from the moment it starts, and waits out a calibration period
+ * before trading its first window. See `CALIBRATION_MIN_SEC` in config.ts and
+ * `Engine.start` in engine.ts.
  */
 
 // Binance publishes the same API on several hosts; a regional block tends to
@@ -55,46 +53,6 @@ export async function latest(): Promise<Tick> {
       const p = Number(r.price);
       if (!Number.isFinite(p) || p <= 0) throw new Error('bad price');
       return { t: Date.now(), p };
-    })
-  );
-}
-
-type Kline = [number, string, string, string, string, ...unknown[]];
-
-/**
- * `minutes` of real 1-second klines, folded into 10-second bars.
- * Binance caps a request at 1000 rows, so anything over ~16 minutes needs
- * several calls; they run in parallel since this sits on the critical path
- * at startup.
- */
-export async function history(minutes: number, now = Date.now()): Promise<Bar[]> {
-  const end = now;
-  const start = end - minutes * 60_000;
-  const chunkMs = 1000 * 1000; // 1000 one-second candles per request
-
-  return firstSuccess(
-    HOSTS.map((host) => async () => {
-      const chunks: { from: number; to: number }[] = [];
-      for (let s = start; s < end; s += chunkMs) {
-        chunks.push({ from: s, to: Math.min(s + chunkMs, end) });
-      }
-
-      const rows = await Promise.all(
-        chunks.map((c) =>
-          fetchJson<Kline[]>(
-            `${host}/api/v3/klines?symbol=BTCUSDT&interval=1s&startTime=${c.from}&endTime=${c.to}&limit=1000`,
-            { timeoutMs: 7000, retries: 0 }
-          )
-        )
-      );
-
-      const ticks: Tick[] = rows
-        .flat()
-        .map((k) => ({ t: Number(k[0]), p: Number(k[4]) }))
-        .filter((t) => Number.isFinite(t.p) && t.p > 0);
-
-      if (ticks.length < 60) throw new Error(`only ${ticks.length} candles returned`);
-      return fillGaps(toBars(ticks));
     })
   );
 }

@@ -1,100 +1,104 @@
 # Vision — Polymarket BTC 5-minute UP/DOWN
 
 A small Next.js app that trades Polymarket's Bitcoin 5-minute up/down markets.
-Runs on Vercel. Paper mode by default.
+Runs on Vercel. Paper mode by default. No LLM, no API key required to run —
+just prices and a Monte Carlo simulation.
 
 ## How it works
 
 Every five minutes Polymarket opens a new market: will Bitcoin be higher in five
 minutes than it is right now? Vision plays one cycle per window.
 
-1. **Wait for a fresh window.** It never joins one already in progress — the
-   whole bet is measured against the price at the open, and joining late means
-   guessing that number.
-2. **At the open, record the price.** That is the barrier the market settles on.
-3. **Ask the model once.** It gets the last 30 minutes of prices at 10-second
-   resolution plus the current price, and answers with two things only:
-
-   ```json
-   { "direction": "UP", "probability": 62 }
-   ```
-
-   No confidence score, no commentary. The direction fixes which side we are
-   allowed to trade for the rest of the window. The probability seeds step 4.
-4. **Re-check that answer every second.** By the time the model replies, Bitcoin
-   has already moved — and it keeps moving for another four minutes. A Monte
-   Carlo simulation turns the model's probability into a drift, applies it only
-   to the seconds remaining, and starts from the price *right now*. So the
-   number we trade on is never the number the model returned.
-5. **Buy when we are far enough ahead.** If our probability beats what the
-   market charges for that side by more than the minimum edge (5% by default),
-   it buys. Only that side, only once per window.
+1. **Calibrate first.** There is no seeded history. On start, the app spends
+   `CALIBRATION_MIN_SEC` (5 minutes by default) gathering nothing but real,
+   live price ticks before it will touch a window — long enough for the
+   volatility estimate behind every probability to be real rather than a
+   generic placeholder. It keeps a rolling 30-minute tape after that.
+2. **Wait for a fresh window.** Once calibrated, it never joins a window
+   already in progress — the whole bet is measured against the price at the
+   open, and joining late means guessing that number.
+3. **Fetch the barrier — never guess it.** At the open, the price to beat is
+   read from **Polymarket's own live relay of the Chainlink price stream**
+   these markets actually settle on (see "About the price feed" below). If
+   that is unreachable it falls back to the free on-chain Chainlink read, and
+   only as a last resort to the app's own Binance-derived price — and it says
+   which one it used, in the UI and in the log.
+4. **Run the only model there is.** A driftless Monte Carlo: `paths` random
+   walks are simulated forward from the *current* price, using the realised
+   volatility of the last 30 minutes of real ticks, for however many seconds
+   are left in the window. `P(UP)` is the share that finish above the
+   barrier. No forecast, no prior, no external opinion feeds it — recomputed
+   roughly once a second for as long as the window is open.
+5. **Buy whichever side is worth more than it costs.** Both UP and DOWN are
+   evaluated every tick: if the simulation's probability for a side beats what
+   the market is charging for it by more than the configured minimum edge, it
+   buys that side. There is no pinned direction — either side can trade, and
+   which one wins is decided fresh each time.
 6. **Settle at the close** and record the window, traded or not.
 
-The point of step 4 is worth stating plainly: a call of "UP at 70%" on a window
-where Bitcoin has since dropped well below the barrier with a minute left comes
-out *low*, because the recovery needed in the time remaining is not plausible at
-the current volatility. The model picks a side; the simulation decides whether
-that side is still worth paying for.
+## About the price feed
 
-### Does the model actually help?
+Polymarket settles these markets on **Chainlink Data Streams BTC/USD**, and
+Chainlink does not offer that stream for free — it needs commercial
+credentials. But Polymarket runs a **public Real-Time Data Service** that
+relays it, with no key and no auth, specifically so people can see the same
+price the markets resolve against:
 
-Probably the fairest thing to say is: unknown, and worth measuring. Over five
-minutes Bitcoin is close to a coin flip, and the model's answer is already
-slightly stale when it arrives.
+```
+wss://ws-live-data.polymarket.com
+topic: crypto_prices_chainlink
+```
 
-So every simulation is run twice on the same random draws — once primed with the
-model's call, once with a neutral 50/50 prior — and both are scored against what
-actually happened. The app shows the comparison directly: if the model adds
-nothing, the two Brier scores match and it says so, and you can set its weight to
-0 in Settings and trade on the volatility maths alone.
+The app connects to this directly from the browser (`src/lib/chainlinkFeed.ts`)
+and uses it as the primary source for the barrier — the one number the whole
+system is measured against. Behind it sit two fallbacks: the free on-chain
+Chainlink aggregator (`chainlink.ts`, much slower — it only updates on a 0.5%
+deviation or an hourly heartbeat) and, last, the app's own Binance-derived
+tape. Every window's history records which source was actually used
+(`barrierSource`), so a fallback is always visible, never silent.
+
+Second-to-second prices — the tape the volatility estimate and the live chart
+are built from — come from **Binance**, which is free, needs no key, and
+publishes real 1-second resolution. It is one exchange's tape rather than an
+oracle aggregate, so it is continuously re-anchored to whichever Chainlink
+read arrives most recently (the live relay when connected, the on-chain read
+every 30 seconds otherwise): the difference is added to every Binance price,
+past and future, so the level tracks the settlement oracle while the
+movement is Binance's real tape.
+
+> This repository's sandbox has no route to `polymarket.com`, so the RTDS
+> client's protocol details (endpoint, subscribe message, ping) are taken
+> directly from Polymarket's own `real-time-data-client` source on GitHub,
+> but the connection itself has not been exercised against the live
+> endpoint. If it does not connect in your deployment, the two fallbacks mean
+> the app still runs correctly — it will just say so in Activity and use the
+> on-chain or Binance-derived barrier instead.
 
 ## Setup
 
 ```bash
 npm install
-cp .env.example .env.local     # add OPENROUTER_API_KEY
 npm run dev
 ```
 
-Press **Start**. It waits for the next window, then runs cycles. **Trade
-automatically** stays off until you turn it on, so you can watch it decide first.
+No `.env.local` is required for paper mode. Press **Start** — it calibrates,
+then waits for the next window and runs cycles. **Trade automatically** stays
+off until you turn it on, so you can watch it decide first.
 
 ### Environment variables
 
+Every one of these is optional for paper trading.
+
 | Variable | Needed | What for |
 |---|---|---|
-| `OPENROUTER_API_KEY` | **yes** | Without it the model can't be asked and nothing trades. |
-| `OPENROUTER_MODEL` | no | Defaults to `deepseek/deepseek-v4-flash-0731`. |
 | `VISION_ACCESS_TOKEN` | recommended | Puts the whole app behind a shared secret. A Vercel URL is public, and in live mode this page spends money. |
 | `UPSTASH_REDIS_REST_URL` / `_TOKEN` | recommended | Keeps trade history across restarts. Without it, history lives in memory and is lost on every cold start. |
 | `POLYMARKET_PRIVATE_KEY` | live only | Polygon key holding USDC.e. |
 | `ALLOW_LIVE_TRADING` | live only | Must be exactly `true`. Live orders are refused otherwise, whatever the UI says. |
-| `CHAINLINK_RPC_URL` | no | Any Ethereum RPC, for the cross-check readout. |
+| `CHAINLINK_RPC_URL` | no | Any Ethereum RPC, for the on-chain fallback. |
 
 Deploy: push, import at [vercel.com/new](https://vercel.com/new), add the
-variables, done. No build configuration needed.
-
-## About the price feed
-
-Polymarket settles these markets on **Chainlink Data Streams BTC/USD**. Chainlink
-does not offer that stream without commercial credentials, and its free on-chain
-feed is a different, much slower product — it moves on a 0.5% deviation or an
-hourly heartbeat, so it cannot produce a 10-second series at all.
-
-So live prices and history come from **Binance**, which is free, needs no key,
-and actually publishes 1-second resolution. It is one exchange's tape rather
-than an oracle aggregate, so the app continuously anchors it to the free
-on-chain Chainlink price: every 30 seconds, and immediately at the open of each
-window before the barrier is captured, it reads Chainlink and adds the
-difference to every Binance price — past and future — until the next read
-moves it again. The result: the level tracks the same oracle Polymarket
-settles against as closely as its slow update cadence (a 0.5% deviation or an
-hourly heartbeat) allows, while the second-to-second movement is still
-Binance's real tape. Each re-anchor is logged in Activity.
-
-If you get Chainlink Data Streams credentials, swapping the source is one file
-(`src/lib/binance.ts`).
+variables you want, done. No build configuration needed.
 
 ## Live mode
 
@@ -115,12 +119,11 @@ request, plus cancellation of any resting orders, plus auto-trade off.
 
 ## Settings
 
-Six things, all on sliders:
+Five things, all on sliders, plus the mode:
 
 - **Minimum edge** — how far ahead of the market price to require before buying
 - **Stake per trade** — fixed dollars per position
 - **Stop after losing** — daily loss limit
-- **How much to trust the model** — 0 ignores its call entirely
 - **Don't enter with less than** — seconds left on the clock
 - **Paper / Live**
 
@@ -128,18 +131,18 @@ Six things, all on sliders:
 
 ```
 src/lib/
-  binance.ts     live price + history
-  chainlink.ts   the on-chain cross-check, and the per-window anchor
-  market.ts      finding the live 5-minute market
-  book.ts        order book maths, and the paper fill model
-  clob.ts        Polymarket reads
-  llm.ts         the prompt, the call, and tolerant parsing
-  montecarlo.ts  the per-second probability update
-  engine.ts      the loop
-  live.ts        real order placement
-  store.ts       trade history
-src/app/api/     server routes — all secrets, all validation
-src/components/  the app
+  binance.ts        live price
+  chainlink.ts       the on-chain fallback read
+  chainlinkFeed.ts   Polymarket's live Chainlink relay (browser WebSocket)
+  market.ts          finding the live 5-minute market
+  book.ts            order book maths, and the paper fill model
+  clob.ts            Polymarket reads
+  montecarlo.ts       the driftless simulation
+  engine.ts           the loop
+  live.ts             real order placement
+  store.ts            trade history
+src/app/api/         server routes — all secrets, all validation
+src/components/      the app
 ```
 
 ## Tests
@@ -148,20 +151,28 @@ src/components/  the app
 npm test
 ```
 
-25 tests, no network needed. The ones that matter: the simulation reproduces the
-prior it was given when the full window remains, collapses when price has moved
-against the call, and ignores the model entirely at zero weight; malformed model
-replies are rejected rather than guessed at; paper fills walk real depth and
-report shortfalls; the forecast call shares one timeout budget across retries and
-fails fast on a bad key.
+24 tests, no network needed. The ones that matter: at the barrier with nothing
+else known the simulation is a coin flip; being on either side of the barrier
+moves P(UP) the right way and by a symmetric amount; more volatility pulls a
+winning position back toward even; a finished window is decided, not
+simulated; a real 30-minute tape clears the fallback threshold in the
+volatility estimate; the Chainlink anchor re-levels history and live ticks by
+exactly the same amount; paper fills walk real depth and report shortfalls;
+market discovery uses Polymarket's deterministic slug grid rather than a
+text search, with a case that reproduces a real bug (a market whose own date
+fields would have produced the wrong window).
 
 ## Known limits
 
 - **The tab must stay open.** The loop runs in the browser. Closing it stops
   trading, which is the safer default anyway.
-- **The price is a proxy**, not the settlement feed. See above.
-- **Paper settlement uses our feed**, so it can disagree with the on-chain result
-  at the boundary on a very close window.
+- **The RTDS connection is unverified**, per the caveat above. It degrades
+  safely if it doesn't work in your environment.
+- **Binance is a proxy** for the parts of the tape the settlement oracle
+  cannot supply fast enough — the volatility estimate, the chart. See "About
+  the price feed."
+- **Paper settlement uses the app's own live price**, so it can disagree with
+  the on-chain result at the boundary on a very close window.
 - **The edge may not exist.** A five-minute Bitcoin binary is close to a coin
   flip and Polymarket's book is not naive. Run paper mode until the numbers say
   something before risking real money.

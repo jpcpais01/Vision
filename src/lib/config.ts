@@ -4,8 +4,16 @@ import type { Config } from './types';
 export const WINDOW_SEC = 300;
 /** History bar size, in seconds. */
 export const BAR_SEC = 10;
-/** How much history we send to the model. */
+/** Rolling width of the price history the engine keeps, in minutes. */
 export const HISTORY_MIN = 30;
+/**
+ * Minimum time the engine must spend gathering live ticks before it will
+ * trade its first window. There is no seeded history — the tape is built
+ * entirely from what has actually been observed since start() — so this is
+ * the time it takes for the volatility estimate to be real rather than a
+ * generic fallback number.
+ */
+export const CALIBRATION_MIN_SEC = 300;
 
 export const DEFAULT_CONFIG: Config = {
   mode: 'PAPER',
@@ -16,7 +24,6 @@ export const DEFAULT_CONFIG: Config = {
   maxDailyLossUsd: 100,
   minSecondsLeft: 20,
   paths: 10_000,
-  llmWeight: 1,
 };
 
 const BOUNDS = {
@@ -25,7 +32,6 @@ const BOUNDS = {
   maxDailyLossUsd: [1, 100_000],
   minSecondsLeft: [5, 240],
   paths: [1000, 50_000],
-  llmWeight: [0, 1],
 } as const;
 
 /** Clamp an untrusted patch into range. Applied on every write, server-side too. */

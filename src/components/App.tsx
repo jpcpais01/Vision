@@ -2,11 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import { useEngine } from '@/hooks/useEngine';
-import { WINDOW_SEC } from '@/lib/config';
+import { WINDOW_SEC, CALIBRATION_MIN_SEC } from '@/lib/config';
 import { PriceChart, ProbChart } from '@/components/Charts';
 import { Settings } from '@/components/Settings';
 import { clock, cx, pct, pts, signed, time, usd } from '@/lib/format';
-import type { Quote, Side } from '@/lib/types';
+import type { BarrierSource, Quote, Side } from '@/lib/types';
 
 export default function App() {
   const v = useEngine();
@@ -25,6 +25,7 @@ export default function App() {
 
   const c = s.cycle;
   const live = config.mode === 'LIVE';
+  const calibrating = c.phase === 'calibrating';
 
   return (
     <main className="mx-auto flex min-h-screen max-w-[880px] flex-col gap-4 px-4 pb-16 pt-5">
@@ -55,6 +56,14 @@ export default function App() {
           {s.connected ? 'live' : s.running ? 'connecting' : 'offline'}
         </span>
 
+        <span
+          className="flex items-center gap-1.5 text-xs text-[var(--muted)]"
+          title="Polymarket's own live relay of the Chainlink price stream these markets settle on"
+        >
+          <span className={cx('h-1.5 w-1.5 rounded-full', s.chainlinkLive ? 'bg-[var(--up)]' : 'bg-[var(--line)]')} />
+          Chainlink {s.chainlinkLive ? 'live' : 'offline'}
+        </span>
+
         <div className="ml-auto flex items-center gap-2">
           <button className="btn" onClick={() => setShowSettings(true)}>
             Settings
@@ -79,12 +88,33 @@ export default function App() {
 
       {v.error ? <Banner tone="down">Can’t reach the server: {v.error}</Banner> : null}
       {s.feedError ? <Banner tone="warn">Price feed: {s.feedError}</Banner> : null}
-      {health && !health.capabilities.llm ? (
-        <Banner tone="warn">
-          No <code>OPENROUTER_API_KEY</code> set — the model can’t be asked, so nothing will trade.
-        </Banner>
-      ) : null}
       {config.killSwitch ? <Banner tone="down">Stopped. Nothing will trade until you reset.</Banner> : null}
+
+      {calibrating ? (
+        <section className="card p-5">
+          <div className="label">Calibrating</div>
+          <div className="mt-1 flex items-baseline gap-3">
+            <span className="num text-[34px] font-semibold leading-none">
+              {clock(s.calibratingSecondsLeft)}
+            </span>
+            <span className="text-sm text-[var(--muted)]">left</span>
+          </div>
+          <p className="mt-3 text-sm leading-relaxed text-[var(--muted)]">
+            There is no seeded history — the price tape is built entirely from what has actually
+            been observed since you pressed Start. It won’t trade its first window until it has
+            gathered {CALIBRATION_MIN_SEC / 60} minutes of real ticks, so the volatility estimate
+            behind every probability is real rather than a generic placeholder.
+          </p>
+          <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-[var(--line)]">
+            <div
+              className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-1000"
+              style={{
+                width: `${Math.min(100, Math.max(0, (1 - (s.calibratingSecondsLeft ?? CALIBRATION_MIN_SEC) / CALIBRATION_MIN_SEC) * 100))}%`,
+              }}
+            />
+          </div>
+        </section>
+      ) : null}
 
       {/* ── The window ──────────────────────────────────────── */}
       <section className="card p-5">
@@ -109,6 +139,7 @@ export default function App() {
             {c.barrier ? (
               <div className="num mt-1 text-xs text-[var(--muted)]">
                 needs to beat {usd(c.barrier)}
+                {c.barrierSource ? ` · ${barrierSourceLabel(c.barrierSource)}` : ''}
               </div>
             ) : null}
           </div>
@@ -133,7 +164,7 @@ export default function App() {
           </div>
         ) : null}
 
-        {s.running ? (
+        {s.running && !calibrating ? (
           <div className="mt-4 flex items-center gap-6 border-t border-[var(--line)] pt-4">
             <OrderBookSide side="UP" quote={s.quotes.up} />
             <OrderBookSide side="DOWN" quote={s.quotes.down} />
@@ -151,83 +182,62 @@ export default function App() {
           </div>
         ) : (
           <p className="mt-4 border-t border-[var(--line)] pt-4 text-sm leading-relaxed text-[var(--muted)]">
-            Press <strong className="text-[var(--text)]">Start</strong> and it waits for the next
-            5-minute window to open — it never joins one already running. At the open it asks the
-            model which way Bitcoin goes, then re-checks that answer against the live price every
-            second, and buys only when it is far enough ahead of the market price.
+            Press <strong className="text-[var(--text)]">Start</strong> and it spends
+            {' '}{CALIBRATION_MIN_SEC / 60} minutes gathering real price data, then waits for the
+            next 5-minute window to open — it never joins one already running. The barrier is
+            fetched from Polymarket’s own live Chainlink feed, never guessed, and a driftless
+            Monte Carlo simulation re-checks the odds against the live price every second. It
+            buys only when that beats the market’s own price by enough to be worth it.
           </p>
         )}
       </section>
 
-      {/* ── The call ────────────────────────────────────────── */}
-      {s.running ? (
-      <section className="card p-5">
-        {!c.forecast && !c.forecastError ? (
-          <div className="py-6 text-center text-sm text-[var(--muted)]">
-            {c.phase === 'forecasting'
-              ? 'Asking the model…'
-              : 'The model is asked once, the moment a new window opens.'}
-          </div>
-        ) : c.forecastError ? (
-          <div className="text-sm text-[var(--down)]">
-            Model didn’t answer: {c.forecastError}
-          </div>
-        ) : (
-          <>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-              <span className="label">Model called</span>
-              <span
-                className={cx(
-                  'num text-lg font-bold',
-                  c.forecast!.side === 'UP' ? 'text-[var(--up)]' : 'text-[var(--down)]'
+      {/* ── The read ────────────────────────────────────────── */}
+      {s.running && !calibrating ? (
+        <section className="card p-5">
+          {!c.sim ? (
+            <div className="py-6 text-center text-sm text-[var(--muted)]">
+              The simulation starts the moment a window opens.
+            </div>
+          ) : (
+            <>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="label">Monte Carlo read</span>
+                <span className="num text-sm text-[var(--muted)]">
+                  {s.volPct ? `${s.volPct.toFixed(0)}% realised volatility` : ''}
+                </span>
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-3">
+                <SideRead side="UP" prob={c.sim.pUp} ask={c.askUp} edge={c.edgeUp} minEdge={config.minEdge} />
+                <SideRead
+                  side="DOWN"
+                  prob={1 - c.sim.pUp}
+                  ask={c.askDown}
+                  edge={c.edgeDown}
+                  minEdge={config.minEdge}
+                />
+              </div>
+
+              <div className="mt-4">
+                <ProbChart track={c.track} startMs={c.market?.startMs ?? null} />
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+                {c.tradeId && c.tradeId !== 'pending' ? (
+                  <Chip tone="up">In position</Chip>
+                ) : (c.edgeUp !== null && c.edgeUp > config.minEdge) ||
+                  (c.edgeDown !== null && c.edgeDown > config.minEdge) ? (
+                  <Chip tone="up">
+                    Edge found — buying {c.edgeUp !== null && c.edgeUp >= (c.edgeDown ?? -Infinity) ? 'UP' : 'DOWN'}
+                  </Chip>
+                ) : (
+                  <Chip tone="muted">{c.skipReason ?? 'Watching'}</Chip>
                 )}
-              >
-                {c.forecast!.side}
-              </span>
-              <span className="num text-sm text-[var(--muted)]">
-                at {pct(c.forecast!.probability)} · {(c.forecast!.latencyMs / 1000).toFixed(1)}s
-              </span>
-            </div>
-
-            <div className="mt-4 grid grid-cols-3 gap-3">
-              <Figure
-                label="Our probability"
-                value={pct(c.ourProb, 1)}
-                hint="updated every second"
-                strong
-              />
-              <Figure
-                label="Market charges"
-                value={pct(c.marketProb, 1)}
-                hint={c.marketProb ? `${c.marketProb.toFixed(3)} per share` : 'no offers'}
-              />
-              <Figure
-                label="Edge"
-                value={pts(c.edge)}
-                hint={`need +${(config.minEdge * 100).toFixed(0)}%`}
-                tone={c.edge !== null && c.edge > config.minEdge ? 'up' : 'muted'}
-              />
-            </div>
-
-            <div className="mt-4">
-              <ProbChart track={c.track} startMs={c.market?.startMs ?? null} />
-            </div>
-
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-              {c.tradeId && c.tradeId !== 'pending' ? (
-                <Chip tone="up">In position</Chip>
-              ) : c.edge !== null && c.edge > config.minEdge ? (
-                <Chip tone="up">Edge found — buying {c.forecast!.side}</Chip>
-              ) : (
-                <Chip tone="muted">{c.skipReason ?? 'Watching'}</Chip>
-              )}
-              {s.volPct ? (
-                <span className="num text-[var(--muted)]">volatility {s.volPct.toFixed(0)}%</span>
-              ) : null}
-            </div>
-          </>
-        )}
-      </section>
+              </div>
+            </>
+          )}
+        </section>
       ) : null}
 
       {/* ── Today ───────────────────────────────────────────── */}
@@ -244,11 +254,12 @@ export default function App() {
           value={s.stats.wins + s.stats.losses > 0 ? pct(s.stats.winRate) : '—'}
           hint={`${s.stats.wins}W ${s.stats.losses}L`}
         />
-        <Figure label="Windows seen" value={String(s.stats.windows)} hint="traded or not" />
+        <Figure
+          label="Calibration"
+          value={s.stats.scored >= 5 ? s.stats.brier!.toFixed(3) : '—'}
+          hint={s.stats.scored >= 5 ? `Brier · ${s.stats.scored} windows` : 'needs 5+ windows'}
+        />
       </section>
-
-      {/* ── Does the model help? ────────────────────────────── */}
-      {s.stats.scored >= 5 ? <ModelCheck stats={s.stats} /> : null}
 
       {/* ── History ─────────────────────────────────────────── */}
       {s.windows.length > 0 ? (
@@ -274,13 +285,13 @@ export default function App() {
                   {w.outcome ?? '—'}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-xs text-[var(--muted)]">
-                  {w.llmSide ? (
+                  {w.finalPUp != null ? (
                     <>
-                      called {w.llmSide} {w.llmProb ? pct(w.llmProb) : ''}
-                      {w.outcome ? (w.llmSide === w.outcome ? ' ✓' : ' ✗') : ''}
+                      simulated {pct(w.finalPUp)} UP
+                      {w.outcome ? ((w.finalPUp >= 0.5) === (w.outcome === 'UP') ? ' ✓' : ' ✗') : ''}
                     </>
                   ) : (
-                    (w.skipReason ?? 'no call')
+                    (w.skipReason ?? 'no read')
                   )}
                 </span>
                 <span
@@ -336,8 +347,10 @@ export default function App() {
       </section>
 
       <p className="px-1 text-center text-xs leading-relaxed text-[var(--muted)]">
-        Prices from Binance, continuously anchored to Chainlink's on-chain oracle. Paper
-        mode simulates fills against the real order book. Not financial advice.
+        The barrier is fetched from Polymarket’s own live Chainlink relay. Live prices otherwise
+        come from Binance, continuously anchored to Chainlink. There is no forecasting model —
+        only a driftless Monte Carlo over realised volatility. Paper mode simulates fills against
+        the real order book. Not financial advice.
       </p>
 
       {showSettings ? (
@@ -353,60 +366,49 @@ export default function App() {
   );
 }
 
-/** Is the model actually adding anything? Answered with the record, not opinion. */
-function ModelCheck({ stats }: { stats: { brierWithLlm: number | null; brierNeutral: number | null; llmAccuracy: number | null; scored: number } }) {
-  const withLlm = stats.brierWithLlm;
-  const neutral = stats.brierNeutral;
-  if (withLlm == null || neutral == null) return null;
-
-  const better = neutral - withLlm; // positive means the model helped
-  const thin = stats.scored < 30;
-
+function SideRead({
+  side,
+  prob,
+  ask,
+  edge,
+  minEdge,
+}: {
+  side: Side;
+  prob: number;
+  ask: number | null;
+  edge: number | null;
+  minEdge: number;
+}) {
+  const tone = side === 'UP' ? 'text-[var(--up)]' : 'text-[var(--down)]';
   return (
-    <section className="card p-5">
-      <div className="label">Is the model helping?</div>
-      <p className="mt-2 text-sm">
-        {thin ? (
-          <>
-            Too early to say — {stats.scored} windows scored. Come back after 30 or so.
-          </>
-        ) : better > 0.005 ? (
-          <>
-            <strong className="text-[var(--up)]">Yes, a little.</strong> Its calls score better
-            than the same simulation run without them.
-          </>
-        ) : better < -0.005 ? (
-          <>
-            <strong className="text-[var(--down)]">No.</strong> The simulation scores better
-            ignoring the model. Consider dropping the model’s weight to 0 in Settings.
-          </>
-        ) : (
-          <>
-            <strong>No difference.</strong> The model’s calls score the same as ignoring them —
-            the edge, if any, is coming from the volatility maths.
-          </>
-        )}
-      </p>
-      <div className="mt-3 grid grid-cols-3 gap-3">
-        <Figure label="With model" value={withLlm.toFixed(3)} hint="lower is better" />
-        <Figure label="Ignoring it" value={neutral.toFixed(3)} hint="same windows" />
-        <Figure
-          label="Direction right"
-          value={stats.llmAccuracy != null ? pct(stats.llmAccuracy) : '—'}
-          hint="coin flip is 50%"
-        />
+    <div className="rounded-lg border border-[var(--line)] p-3">
+      <div className="flex items-baseline justify-between">
+        <span className={cx('text-xs font-semibold', tone)}>{side}</span>
+        <span className="num text-lg font-bold">{pct(prob, 1)}</span>
       </div>
-    </section>
+      <div className="mt-1 flex items-baseline justify-between text-xs text-[var(--muted)]">
+        <span>market {ask != null ? pct(ask, 0) : '—'}</span>
+        <span className={edge !== null && edge > minEdge ? 'font-semibold text-[var(--up)]' : ''}>
+          edge {pts(edge)}
+        </span>
+      </div>
+    </div>
   );
+}
+
+function barrierSourceLabel(s: BarrierSource): string {
+  if (s === 'polymarket-live') return "Polymarket's live feed";
+  if (s === 'polymarket-onchain') return 'on-chain Chainlink';
+  return 'Binance fallback';
 }
 
 function phaseLabel(s: ReturnType<typeof useEngine>['snapshot']): string {
   if (!s.running) return 'stopped';
   switch (s.cycle.phase) {
+    case 'calibrating':
+      return 'calibrating';
     case 'waiting-for-window':
       return s.secondsToOpen != null ? 'waiting for a fresh window' : 'looking for the next window';
-    case 'forecasting':
-      return 'asking the model';
     case 'tracking':
       return 'tracking';
     case 'in-position':
@@ -450,30 +452,6 @@ function Figure({
   );
 }
 
-/** The current buy price for one side of the market — what a share costs right now. */
-function OrderBookSide({ side, quote }: { side: Side; quote: Quote }) {
-  const up = side === 'UP';
-  const color = up ? 'text-[var(--up)]' : 'text-[var(--down)]';
-  return (
-    <div className="flex items-baseline gap-2">
-      <span className={cx('text-xs font-semibold', color)}>{side}</span>
-      {quote.ask !== null ? (
-        <>
-          <span className="num text-lg font-semibold leading-none">
-            {(quote.ask * 100).toFixed(0)}¢
-          </span>
-          <span className="text-[11px] text-[var(--muted)]">
-            to buy
-            {quote.bid !== null ? ` · ${(quote.bid * 100).toFixed(0)}¢ bid` : ''}
-          </span>
-        </>
-      ) : (
-        <span className="text-xs text-[var(--muted)]">no offers</span>
-      )}
-    </div>
-  );
-}
-
 function Chip({ children, tone }: { children: React.ReactNode; tone: 'up' | 'muted' }) {
   return (
     <span
@@ -498,6 +476,30 @@ function Banner({ children, tone }: { children: React.ReactNode; tone: 'warn' | 
       )}
     >
       {children}
+    </div>
+  );
+}
+
+/** The current buy price for one side of the market — what a share costs right now. */
+function OrderBookSide({ side, quote }: { side: Side; quote: Quote }) {
+  const up = side === 'UP';
+  const color = up ? 'text-[var(--up)]' : 'text-[var(--down)]';
+  return (
+    <div className="flex items-baseline gap-2">
+      <span className={cx('text-xs font-semibold', color)}>{side}</span>
+      {quote.ask !== null ? (
+        <>
+          <span className="num text-lg font-semibold leading-none">
+            {(quote.ask * 100).toFixed(0)}¢
+          </span>
+          <span className="text-[11px] text-[var(--muted)]">
+            to buy
+            {quote.bid !== null ? ` · ${(quote.bid * 100).toFixed(0)}¢ bid` : ''}
+          </span>
+        </>
+      ) : (
+        <span className="text-xs text-[var(--muted)]">no offers</span>
+      )}
     </div>
   );
 }

@@ -135,17 +135,6 @@ export function Settings({
           />
 
           <Slider
-            label="How much to trust the model"
-            hint="0 ignores its call and trades on volatility alone. 1 takes it at its word."
-            value={config.llmWeight * 100}
-            min={0}
-            max={100}
-            step={10}
-            suffix="%"
-            onChange={(v) => onChange({ llmWeight: v / 100 })}
-          />
-
-          <Slider
             label="Don’t enter with less than"
             hint="Seconds left on the clock."
             value={config.minSecondsLeft}
@@ -167,8 +156,6 @@ export function Settings({
             </button>
             {health ? (
               <p className="mt-3 text-[11px] leading-relaxed text-[var(--muted)]">
-                Model: {health.model}
-                <br />
                 Storage: {health.storage}
                 {health.storage === 'upstash' && !health.storageOk ? ' (unreachable)' : ''}
                 {health.storage === 'memory' ? ' — history is lost when the server restarts' : ''}

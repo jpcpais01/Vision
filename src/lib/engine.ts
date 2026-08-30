@@ -1,8 +1,8 @@
 import type {
   Bar,
+  BarrierSource,
   Book,
   Config,
-  Forecast,
   LogLine,
   Market,
   Quote,
@@ -13,34 +13,40 @@ import type {
   Trade,
   WindowRecord,
 } from './types';
-import { DEFAULT_CONFIG, HISTORY_MIN, WINDOW_SEC } from './config';
-import { bucket, fillGaps, merge, shiftBars, shiftTicks, toBars, trim, volatility } from './bars';
+import { CALIBRATION_MIN_SEC, DEFAULT_CONFIG, HISTORY_MIN, WINDOW_SEC } from './config';
+import { bucket, shiftBars, shiftTicks, trim, volatility } from './bars';
 import { quote } from './book';
 import { simulate } from './montecarlo';
+import { ChainlinkFeed } from './chainlinkFeed';
 
 /**
  * ── The loop ─────────────────────────────────────────────────────────────────
  *
- * One instance runs the whole session. Per five-minute window:
+ * One instance runs the whole session. There is one model: a driftless Monte
+ * Carlo over realised volatility (see montecarlo.ts). No forecast, no prior,
+ * no external opinion feeds it.
  *
- *   1. Wait for a window that has not started yet, and join it at its open.
- *      Never mid-window — the barrier is the price at the open, and joining
- *      late means guessing it.
- *   2. At the open, record the barrier and ask the model: higher or lower in
- *      five minutes, and how likely?
- *   3. Keep polling the price every second while it thinks.
- *   4. When the answer lands, re-simulate every second from the price now, so
- *      the probability tracks what actually happened rather than what the
- *      model expected.
- *   5. Buy the model's side when our probability beats the market's ask by
- *      more than the configured edge.
+ *   1. On start, gather live ticks for at least `CALIBRATION_MIN_SEC` before
+ *      doing anything else. There is no seeded history — the tape is built
+ *      entirely from what has actually been observed since this instant — so
+ *      the volatility estimate needs real time behind it before it means
+ *      anything.
+ *   2. Once calibrated, wait for a window that has not started yet, and join
+ *      it at its open. Never mid-window — the barrier is the price at the
+ *      open, and joining late means guessing it.
+ *   3. At the open, capture the barrier from the most direct source available
+ *      — see `captureBarrier`. It is never derived or guessed.
+ *   4. Re-simulate roughly once a second for as long as the window is open,
+ *      from the price right now.
+ *   5. Buy whichever side — UP or DOWN — the simulation says is worth more
+ *      than the market is charging for it, by more than the configured edge.
  *   6. At the close, settle and record the window — traded or not.
  */
 
 export type Phase =
   | 'stopped'
+  | 'calibrating'
   | 'waiting-for-window' // deliberately sitting out a window already in progress
-  | 'forecasting'
   | 'tracking'
   | 'in-position'
   | 'settling';
@@ -49,18 +55,18 @@ export interface Cycle {
   market: Market | null;
   phase: Phase;
   barrier: number | null;
-  forecast: Forecast | null;
-  forecastError: string | null;
+  barrierSource: BarrierSource | null;
   sim: Simulation | null;
-  /** Our probability for the side the model called. */
-  ourProb: number | null;
-  /** What the market charges for that side. */
-  marketProb: number | null;
-  edge: number | null;
+  askUp: number | null;
+  askDown: number | null;
+  /** sim.pUp minus askUp, when askUp is at a sane price. */
+  edgeUp: number | null;
+  /** (1 - sim.pUp) minus askDown, when askDown is at a sane price. */
+  edgeDown: number | null;
   tradeId: string | null;
   skipReason: string | null;
   /** Probability track for the chart. */
-  track: { t: number; ours: number; market: number | null; price: number }[];
+  track: { t: number; pUp: number; askUp: number | null; askDown: number | null }[];
 }
 
 export interface Snapshot {
@@ -71,13 +77,16 @@ export interface Snapshot {
   price: number | null;
   priceAt: number;
   chainlinkGap: number | null;
-  bars: Bar[];
+  /** Whether Polymarket's own live Chainlink relay is currently connected. */
+  chainlinkLive: boolean;
   ticks: Tick[];
   volPct: number | null;
   cycle: Cycle;
   secondsLeft: number | null;
   /** Seconds until the next window opens, when we are waiting for one. */
   secondsToOpen: number | null;
+  /** Seconds left in the mandatory warm-up before the first window can trade. */
+  calibratingSecondsLeft: number | null;
   quotes: { up: Quote; down: Quote };
   trades: Trade[];
   windows: WindowRecord[];
@@ -91,27 +100,30 @@ const MAX_LOGS = 200;
 export class Engine {
   private config: Config = { ...DEFAULT_CONFIG };
   private running = false;
+  private startedAt: number | null = null;
 
   private ticks: Tick[] = [];
   private bars: Bar[] = [];
   private price: number | null = null;
   /** Last raw Binance read, before the Chainlink anchor offset is applied. */
   private rawPrice: number | null = null;
-  /** Added to every Binance price. Recomputed at the open of each window. */
+  /** Added to every Binance price. Re-levelled whenever a fresh Chainlink read arrives. */
   private offset = 0;
   private priceAt = 0;
   private chainlinkGap: number | null = null;
+  private chainlinkLive = false;
   private feedError: string | null = null;
   private vol = { sigma: 0, volPct: 0 };
 
   private market: Market | null = null;
   private books: Record<string, Book> = {};
-  private cycle: Cycle = idleCycle();
+  private cycle: Cycle = idleCycle('stopped');
 
   private trades: Trade[] = [];
   private windows: WindowRecord[] = [];
   private logs: LogLine[] = [];
 
+  private readonly chainlinkFeed: ChainlinkFeed;
   private timers: ReturnType<typeof setInterval>[] = [];
   private listeners = new Set<() => void>();
   private snapshot: Snapshot | null = null;
@@ -120,7 +132,19 @@ export class Engine {
   private seed = 1;
   private pending = { trades: new Map<string, Trade>(), windows: new Map<string, WindowRecord>() };
 
-  constructor(private headers: () => Record<string, string>) {}
+  constructor(private headers: () => Record<string, string>) {
+    this.chainlinkFeed = new ChainlinkFeed({
+      onTick: (tick) => {
+        this.applyChainlinkAnchor(tick.p);
+        this.emit();
+      },
+      onStatus: (connected) => {
+        this.chainlinkLive = connected;
+        if (connected) this.log('info', 'Connected to Polymarket’s live Chainlink relay');
+        this.emit();
+      },
+    });
+  }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -131,9 +155,19 @@ export class Engine {
     }
     this.config = { ...config };
     this.running = true;
-    this.log('info', `Started in ${config.mode} mode`);
+    this.startedAt = Date.now();
+    // A fresh tape for a fresh calibration — data from a previous session
+    // would otherwise leave a stale gap in the middle of the new one.
+    this.ticks = [];
+    this.bars = [];
+    this.vol = { sigma: 0, volPct: 0 };
+    this.cycle = idleCycle('calibrating');
+    this.log(
+      'info',
+      `Started in ${config.mode} mode. Calibrating for ${CALIBRATION_MIN_SEC / 60} minutes before the first trade.`
+    );
 
-    await this.loadHistory();
+    this.chainlinkFeed.start();
     await this.poll();
 
     this.timers.push(setInterval(() => void this.poll(), 1000));
@@ -147,6 +181,7 @@ export class Engine {
   stop(): void {
     if (!this.running) return;
     this.running = false;
+    this.chainlinkFeed.stop();
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     this.cycle = { ...this.cycle, phase: 'stopped' };
@@ -207,13 +242,14 @@ export class Engine {
     // which tokens the order book belongs to — never the loosely-synced
     // `this.market` pointer, which exists to track the *next* window while
     // waiting and can legitimately point elsewhere by the time a window is
-    // underway. Falling back to it only when there is no active cycle lets the
-    // book preview the upcoming market while waiting, without ever letting it
-    // drift from the window actually on screen once one has opened.
+    // underway.
     const forQuotes = this.cycle.market ?? this.market;
     const up = forQuotes?.tokens.find((t) => t.side === 'UP');
     const down = forQuotes?.tokens.find((t) => t.side === 'DOWN');
     const m = this.cycle.market;
+
+    const calibrating =
+      this.startedAt !== null ? CALIBRATION_MIN_SEC - (now - this.startedAt) / 1000 : null;
 
     return {
       running: this.running,
@@ -223,12 +259,13 @@ export class Engine {
       price: this.price,
       priceAt: this.priceAt,
       chainlinkGap: this.chainlinkGap,
-      bars: this.bars,
+      chainlinkLive: this.chainlinkLive,
       ticks: this.ticks.slice(-400),
       volPct: this.vol.volPct || null,
       cycle: this.cycle,
       secondsLeft: m ? (m.endMs - now) / 1000 : null,
       secondsToOpen: !m && this.market ? (this.market.startMs - now) / 1000 : null,
+      calibratingSecondsLeft: calibrating !== null && calibrating > 0 ? calibrating : null,
       quotes: {
         up: quote(up ? this.books[up.tokenId] : null),
         down: quote(down ? this.books[down.tokenId] : null),
@@ -242,24 +279,7 @@ export class Engine {
 
   // ── Price ─────────────────────────────────────────────────────────────────
 
-  private async loadHistory(): Promise<void> {
-    try {
-      const res = await fetch(`/api/history?minutes=${HISTORY_MIN}`, {
-        headers: this.headers(),
-        cache: 'no-store',
-      });
-      if (!res.ok) throw new Error(`history ${res.status}`);
-      const data = (await res.json()) as { bars: Bar[] };
-      this.bars = merge(data.bars ?? [], this.bars);
-      this.vol = volatility(this.bars);
-      this.log('info', `Loaded ${data.bars?.length ?? 0} bars of price history`);
-    } catch (err) {
-      this.log('warn', `History unavailable: ${msg(err)} — volatility will warm up from live ticks`);
-    }
-    this.emit();
-  }
-
-  /** One price read per second, as the whole system is specified to use. */
+  /** One price read per second. Bars and the rolling 30-minute tape are built from this alone. */
   private async poll(): Promise<void> {
     if (!this.running) return;
     try {
@@ -282,6 +302,10 @@ export class Engine {
       if (last && last.t === b) last.c = p;
       else if (!last || b > last.t) this.bars.push({ t: b, c: p });
 
+      // Keep only the trailing window — the tape is built purely from what has
+      // actually been observed, so it grows toward this width rather than
+      // starting there.
+      this.bars = trim(this.bars, HISTORY_MIN, this.priceAt);
       if (this.bars.length % 6 === 0) this.vol = volatility(this.bars);
       this.emit();
     } catch (err) {
@@ -291,12 +315,11 @@ export class Engine {
   }
 
   /**
-   * Runs every 30 seconds, market open or not. Every fetch also feeds the
-   * anchor (`applyChainlinkAnchor`) — so the Binance-derived price is
-   * re-levelled to Chainlink for as long as the window is open, not only at
-   * its first instant. Most of these polls are a no-op: the on-chain answer
-   * itself only moves on a 0.5% deviation or an hourly heartbeat, so there is
-   * usually nothing new to apply. When it does move, this is what catches it.
+   * Runs every 30 seconds, market open or not — the free on-chain Chainlink
+   * aggregator, purely as a backup anchor and a display cross-check for
+   * `Engine.chainlinkFeed`, which updates far more often. Most of these polls
+   * are a no-op: the on-chain answer itself only moves on a 0.5% deviation or
+   * an hourly heartbeat.
    */
   private async pollChainlink(): Promise<void> {
     if (!this.running) return;
@@ -310,6 +333,29 @@ export class Engine {
     } catch {
       /* advisory only */
     }
+  }
+
+  /**
+   * Re-level Binance to a Chainlink read, from whichever source produced it —
+   * Polymarket's live relay (most of the time) or the on-chain fallback.
+   * Binance is one exchange's tape; Chainlink's answer is a genuine
+   * independent read of the same asset. The difference against the current
+   * raw Binance price is added to every Binance number: past (the bars and
+   * ticks already on the tape) and future (every price from here on, via
+   * `offset`). The second-to-second movement is still Binance's real tape,
+   * which is the only source here that updates fast enough to be worth
+   * polling every second.
+   */
+  private applyChainlinkAnchor(chainlinkPrice: number): void {
+    if (this.rawPrice === null) return;
+    const nextOffset = chainlinkPrice - this.rawPrice;
+    const delta = nextOffset - this.offset;
+    if (Math.abs(delta) < 0.005) return; // no meaningful change to apply
+
+    this.offset = nextOffset;
+    if (this.price !== null) this.price += delta;
+    this.bars = shiftBars(this.bars, delta);
+    this.ticks = shiftTicks(this.ticks, delta);
   }
 
   // ── Market ────────────────────────────────────────────────────────────────
@@ -330,8 +376,7 @@ export class Engine {
       const now = Date.now();
 
       // Hold whatever we already have until it genuinely expires. A transient
-      // discovery failure used to null this out and take the forecast and the
-      // probabilities off the screen with it.
+      // discovery failure must not take the live cycle off the screen with it.
       if (this.market && this.market.endMs > now) {
         const fresh = [d.live, d.next].find((m) => m?.id === this.market!.id);
         if (fresh) this.market = { ...this.market, ...fresh };
@@ -339,8 +384,8 @@ export class Engine {
         // Only ever adopt a window we can join from its open. One already in
         // progress is watched, not traded — its barrier is unknowable to us.
         this.market = d.next ?? (d.live && d.live.startMs >= now - 2000 ? d.live : null);
-        if (this.market && this.cycle.market?.id !== this.market.id) {
-          this.cycle = { ...idleCycle(), phase: 'waiting-for-window' };
+        if (this.market && this.cycle.market?.id !== this.market.id && this.cycle.phase !== 'calibrating') {
+          this.cycle = idleCycle('waiting-for-window');
           const wait = Math.max(0, (this.market.startMs - now) / 1000);
           this.log(
             'info',
@@ -359,8 +404,26 @@ export class Engine {
   // ── The cycle ─────────────────────────────────────────────────────────────
 
   private step(): void {
-    if (!this.running || !this.market) return;
+    if (!this.running) return;
     const now = Date.now();
+
+    const calibrating =
+      this.startedAt !== null && now - this.startedAt < CALIBRATION_MIN_SEC * 1000;
+
+    if (calibrating) {
+      if (this.cycle.phase !== 'calibrating') {
+        this.cycle = idleCycle('calibrating');
+        this.emit();
+      }
+      return; // deliberately sit out any window while calibrating
+    }
+    if (this.cycle.phase === 'calibrating') {
+      this.cycle = idleCycle('waiting-for-window');
+      this.log('info', 'Calibration complete — waiting for the next fresh window.');
+      this.emit();
+    }
+
+    if (!this.market) return;
     const m = this.market;
 
     // The window we were waiting for has opened — begin at its open.
@@ -384,124 +447,59 @@ export class Engine {
   }
 
   private begin(m: Market): void {
-    if (this.price === null) {
-      this.log('warn', 'Window opened with no price — sitting this one out');
-      return;
-    }
     // Claim the slot synchronously: step() runs every 250ms and this.cycle
-    // .market must stop being null right away, or the Chainlink fetch below
-    // would let a second tick re-enter and start the window twice.
-    this.cycle = { ...idleCycle(), market: m, phase: 'forecasting' };
+    // .market must stop being null right away, or the async barrier capture
+    // below would let a second tick re-enter and start the window twice.
+    this.cycle = { ...idleCycle('tracking'), market: m };
     this.emit(true);
     void this.openWindow(m);
   }
 
   private async openWindow(m: Market): Promise<void> {
-    await this.computeOffset();
-    if (this.cycle.market?.id !== m.id || this.price === null) return;
+    const captured = await this.captureBarrier();
+    if (this.cycle.market?.id !== m.id) return; // rolled over while we waited
 
-    const barrier = this.price;
-    this.cycle = { ...this.cycle, barrier };
-    this.log('info', `Window open. Barrier $${barrier.toFixed(2)}`);
-    this.emit(true);
-    void this.askModel(m, barrier);
-  }
-
-  /**
-   * Anchor Binance to the settlement oracle before capturing a barrier.
-   *
-   * A guaranteed-fresh read: the barrier must not be captured on a stale
-   * anchor, so this fetches Chainlink directly rather than waiting for the
-   * next `pollChainlink` tick (which can be up to 30s away).
-   */
-  private async computeOffset(): Promise<void> {
-    if (this.rawPrice === null) return;
-    try {
-      const res = await fetch('/api/chainlink', { headers: this.headers(), cache: 'no-store' });
-      if (!res.ok) return;
-      const d = (await res.json()) as { price?: number | null };
-      if (d.price) this.applyChainlinkAnchor(d.price);
-    } catch {
-      // Best-effort. Trade on raw Binance if Chainlink is unreachable.
+    if (!captured) {
+      this.log('warn', 'Window opened with no price available anywhere — sitting this one out');
+      return;
     }
-  }
 
-  /**
-   * Re-level Binance to a Chainlink read.
-   *
-   * Binance is one exchange's tape; Chainlink's on-chain answer, though far too
-   * slow to trade from on its own, is a genuine independent read of the same
-   * asset. Whenever a fresh one arrives — at a window's open, and every 30s
-   * afterward via `pollChainlink` — the difference against the current raw
-   * Binance price is added to every Binance number: past (the bars and ticks
-   * already on the tape) and future (every price from here on, via `offset`).
-   * The level we trade on stays close to what Polymarket actually settles
-   * against for as long as the window runs; the second-to-second movement is
-   * still Binance's real tape, which is the only part of this that updates
-   * fast enough to be worth polling every second.
-   */
-  private applyChainlinkAnchor(chainlinkPrice: number): void {
-    if (this.rawPrice === null) return;
-    const nextOffset = chainlinkPrice - this.rawPrice;
-    const delta = nextOffset - this.offset;
-    if (Math.abs(delta) < 0.005) return; // the on-chain answer has not moved
-
-    this.offset = nextOffset;
-    if (this.price !== null) this.price += delta;
-    this.bars = shiftBars(this.bars, delta);
-    this.ticks = shiftTicks(this.ticks, delta);
+    this.cycle = { ...this.cycle, barrier: captured.price, barrierSource: captured.source };
     this.log(
       'info',
-      `Anchored to Chainlink: ${delta >= 0 ? '+' : '-'}$${Math.abs(delta).toFixed(2)} ` +
-        `(Chainlink $${chainlinkPrice.toFixed(2)} vs Binance $${this.rawPrice.toFixed(2)})`
+      `Window open. Barrier $${captured.price.toFixed(2)} (${barrierSourceLabel(captured.source)})`
     );
+    this.emit(true);
   }
 
-  /** Ask once, at the open. Nothing waits on it. */
-  private async askModel(m: Market, barrier: number): Promise<void> {
+  /**
+   * The price to beat, fetched rather than guessed — in order of how directly
+   * each source reflects what Polymarket actually settles against:
+   *
+   *   1. Polymarket's own live relay of the Chainlink stream. This is as
+   *      direct as it gets without commercial Data Streams credentials: it is
+   *      Polymarket's own feed of the exact series these markets resolve on.
+   *   2. The free on-chain Chainlink aggregator — the same asset, independently
+   *      read, but far slower to update.
+   *   3. Our own Binance-derived tape, continuously anchored to whichever of
+   *      the above last reported. Used only if neither responds in time, and
+   *      always labelled as the fallback that it is.
+   */
+  private async captureBarrier(): Promise<{ price: number; source: BarrierSource } | null> {
+    const live = this.chainlinkFeed.latest();
+    if (live) return { price: live.p, source: 'polymarket-live' };
+
     try {
-      const res = await fetch('/api/forecast', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', ...this.headers() },
-        body: JSON.stringify({ bars: this.bars.slice(-190), current: barrier }),
-      });
-      const data = (await res.json()) as { forecast?: Forecast; error?: string };
-
-      // The window may have rolled while we waited — do not apply a stale call.
-      if (this.cycle.market?.id !== m.id) return;
-
-      if (!res.ok || !data.forecast) {
-        this.cycle = {
-          ...this.cycle,
-          phase: 'tracking',
-          forecastError: data.error ?? `forecast failed (${res.status})`,
-          skipReason: 'no forecast',
-        };
-        this.log('error', this.cycle.forecastError!);
-        this.emit(true);
-        return;
+      const res = await fetch('/api/chainlink', { headers: this.headers(), cache: 'no-store' });
+      if (res.ok) {
+        const d = (await res.json()) as { price?: number | null };
+        if (d.price) return { price: d.price, source: 'polymarket-onchain' };
       }
-
-      const f = data.forecast;
-      const moved = (this.price ?? barrier) - barrier;
-      this.cycle = { ...this.cycle, forecast: f, forecastError: null, phase: 'tracking' };
-      this.log(
-        'info',
-        `Model says ${f.side} at ${(f.probability * 100).toFixed(0)}% (${f.latencyMs}ms). ` +
-          `BTC moved $${moved.toFixed(2)} while it thought.`
-      );
-      this.update();
-    } catch (err) {
-      if (this.cycle.market?.id !== m.id) return;
-      this.cycle = {
-        ...this.cycle,
-        phase: 'tracking',
-        forecastError: msg(err),
-        skipReason: 'no forecast',
-      };
-      this.log('error', `Forecast failed: ${msg(err)}`);
-      this.emit(true);
+    } catch {
+      /* fall through to the last resort */
     }
+
+    return this.price !== null ? { price: this.price, source: 'binance' } : null;
   }
 
   /** Re-simulate from the price now, once a second, until the window closes. */
@@ -520,27 +518,23 @@ export class Engine {
       barrier: c.barrier,
       current: this.price,
       remainingSec: remaining,
-      llmPUp: c.forecast?.pUp ?? 0.5,
-      llmWeight: c.forecast ? this.config.llmWeight : 0,
       sigma: this.vol.sigma,
       paths: this.config.paths,
       seed: this.seed++,
     });
 
-    // Without a call from the model there is no side to take, so we track the
-    // probability for the display and trade nothing.
-    const side = c.forecast?.side ?? null;
-    const ourProb = side ? (side === 'UP' ? sim.pUp : 1 - sim.pUp) : null;
-    const q = side ? this.quoteFor(m, side) : null;
-    const marketProb = q?.ask ?? null;
-    const edge = ourProb !== null && marketProb !== null ? ourProb - marketProb : null;
+    const upQ = this.quoteFor(m, 'UP');
+    const downQ = this.quoteFor(m, 'DOWN');
+    const sane = (p: number | null) => p !== null && p >= 0.02 && p <= 0.98;
+    const edgeUp = sane(upQ.ask) ? sim.pUp - upQ.ask! : null;
+    const edgeDown = sane(downQ.ask) ? 1 - sim.pUp - downQ.ask! : null;
 
     const track = [
       ...c.track,
-      { t: now, ours: ourProb ?? sim.pUp, market: marketProb, price: this.price },
+      { t: now, pUp: sim.pUp, askUp: upQ.ask, askDown: downQ.ask },
     ].slice(-320);
 
-    this.cycle = { ...c, sim, ourProb, marketProb, edge, track };
+    this.cycle = { ...c, sim, askUp: upQ.ask, askDown: downQ.ask, edgeUp, edgeDown, track };
     this.considerTrade(m, remaining);
     this.emit();
   }
@@ -553,13 +547,14 @@ export class Engine {
   /**
    * The whole trading rule.
    *
-   * Buy the side the model called, when our probability beats what the market
-   * charges for it by more than the configured edge. Everything else here is a
-   * safety stop, not a signal.
+   * Buy whichever side the simulation says is worth more than the market is
+   * charging for it, by more than the configured edge. There is no pinned
+   * direction to defer to — both sides are evaluated on equal footing every
+   * time. Everything else here is a safety stop, not a signal.
    */
   private considerTrade(m: Market, remaining: number): void {
     const c = this.cycle;
-    if (c.tradeId || !c.forecast || c.ourProb === null || c.edge === null) return;
+    if (c.tradeId) return;
 
     const stop = this.blockingReason(m, remaining);
     if (stop) {
@@ -567,14 +562,21 @@ export class Engine {
       return;
     }
 
-    if (c.edge <= this.config.minEdge) {
-      const need = `edge ${(c.edge * 100).toFixed(1)}% < ${(this.config.minEdge * 100).toFixed(0)}%`;
+    const up = c.edgeUp ?? -Infinity;
+    const down = c.edgeDown ?? -Infinity;
+    const bestEdge = Math.max(up, down);
+
+    if (!(bestEdge > this.config.minEdge)) {
+      const need =
+        bestEdge === -Infinity
+          ? 'no tradeable offers'
+          : `edge ${(bestEdge * 100).toFixed(1)}% < ${(this.config.minEdge * 100).toFixed(0)}%`;
       if (c.skipReason !== need) this.cycle = { ...this.cycle, skipReason: need };
       return;
     }
 
     this.cycle = { ...this.cycle, skipReason: null };
-    void this.buy(m, c.forecast.side);
+    void this.buy(m, up >= down ? 'UP' : 'DOWN');
   }
 
   /** Hard stops, in the order an operator would want to hear about them. */
@@ -586,10 +588,6 @@ export class Engine {
     if (this.trades.some((t) => t.marketId === m.id)) return 'already traded this window';
     if (this.trades.some((t) => t.status === 'OPEN')) return 'a position is still open';
     if (this.todayPnl() <= -Math.abs(this.config.maxDailyLossUsd)) return 'daily loss limit hit';
-
-    const q = this.quoteFor(m, this.cycle.forecast!.side);
-    if (q.ask === null) return 'no offers to buy';
-    if (q.ask < 0.02 || q.ask > 0.98) return 'price too extreme';
     if (this.price === null) return 'no price';
     return null;
   }
@@ -597,14 +595,16 @@ export class Engine {
   private async buy(m: Market, side: Side): Promise<void> {
     const c = this.cycle;
     const token = m.tokens.find((t) => t.side === side);
-    if (!token || c.marketProb === null) return;
+    const ask = side === 'UP' ? c.askUp : c.askDown;
+    if (!token || ask === null || !c.sim) return;
+    const ourProb = side === 'UP' ? c.sim.pUp : 1 - c.sim.pUp;
 
     this.cycle = { ...this.cycle, tradeId: 'pending', phase: 'in-position' };
-    const shares = Math.floor(this.config.stakeUsd / c.marketProb);
+    const shares = Math.floor(this.config.stakeUsd / ask);
 
     this.log(
       'trade',
-      `Buying ${side} — ours ${((c.ourProb ?? 0) * 100).toFixed(0)}% vs market ${(c.marketProb * 100).toFixed(0)}%`
+      `Buying ${side} — ours ${(ourProb * 100).toFixed(0)}% vs market ${(ask * 100).toFixed(0)}%`
     );
 
     try {
@@ -618,11 +618,11 @@ export class Engine {
           tokenId: token.tokenId,
           side,
           shares,
-          maxPrice: Math.min(0.98, c.marketProb + 0.01),
+          maxPrice: Math.min(0.98, ask + 0.01),
           tickSize: m.minTickSize,
           minOrderSize: m.minOrderSize,
           negRisk: m.negRisk,
-          ourProb: c.ourProb ?? 0.5,
+          ourProb,
           barrier: c.barrier ?? 0,
         }),
       });
@@ -694,13 +694,10 @@ export class Engine {
       startMs: m.startMs,
       endMs: m.endMs,
       barrier: c.barrier,
+      barrierSource: c.barrierSource ?? 'binance',
       close,
       outcome,
-      llmSide: c.forecast?.side ?? null,
-      llmProb: c.forecast?.probability ?? null,
-      llmLatencyMs: c.forecast?.latencyMs ?? null,
       finalPUp: c.sim?.pUp ?? null,
-      finalPUpNeutral: c.sim?.pUpNeutral ?? null,
       traded: Boolean(traded),
       pnl: traded?.pnl ?? null,
       skipReason: traded ? null : c.skipReason,
@@ -711,7 +708,7 @@ export class Engine {
       this.pending.windows.set(record.id, record);
     }
 
-    this.cycle = idleCycle();
+    this.cycle = idleCycle('waiting-for-window');
     this.market = null; // force a fresh look for the next window
     this.emit(true);
   }
@@ -729,20 +726,15 @@ export class Engine {
     const done = this.trades.filter((t) => t.status === 'WON' || t.status === 'LOST');
     const wins = done.filter((t) => t.status === 'WON').length;
 
-    // Score the forecast over every window observed, not only the traded ones —
-    // scoring only trades samples exactly the windows where we disagreed with
-    // the market, which is the most biased subset available.
-    const scored = this.windows.filter(
-      (w) => w.outcome !== null && w.finalPUp !== null && w.finalPUpNeutral !== null
-    );
-    const brier = (pick: (w: WindowRecord) => number) =>
+    // Scored over every window observed, not only the traded ones — scoring
+    // only trades samples exactly the windows where the simulation disagreed
+    // with the market, which is the most biased subset available.
+    const scored = this.windows.filter((w) => w.outcome !== null && w.finalPUp !== null);
+    const brier =
       scored.length === 0
         ? null
-        : scored.reduce((s, w) => s + (pick(w) - (w.outcome === 'UP' ? 1 : 0)) ** 2, 0) /
+        : scored.reduce((s, w) => s + (w.finalPUp! - (w.outcome === 'UP' ? 1 : 0)) ** 2, 0) /
           scored.length;
-
-    const called = this.windows.filter((w) => w.llmSide !== null && w.outcome !== null);
-    const right = called.filter((w) => w.llmSide === w.outcome).length;
 
     return {
       trades: this.trades.length,
@@ -753,9 +745,7 @@ export class Engine {
       pnl: done.reduce((s, t) => s + (t.pnl ?? 0), 0),
       today: this.todayPnl(),
       windows: this.windows.length,
-      brierWithLlm: brier((w) => w.finalPUp!),
-      brierNeutral: brier((w) => w.finalPUpNeutral!),
-      llmAccuracy: called.length > 0 ? right / called.length : null,
+      brier,
       scored: scored.length,
     };
   }
@@ -790,25 +780,31 @@ export class Engine {
   }
 }
 
-function idleCycle(): Cycle {
+function idleCycle(phase: Phase): Cycle {
   return {
     market: null,
-    phase: 'waiting-for-window',
+    phase,
     barrier: null,
-    forecast: null,
-    forecastError: null,
+    barrierSource: null,
     sim: null,
-    ourProb: null,
-    marketProb: null,
-    edge: null,
+    askUp: null,
+    askDown: null,
+    edgeUp: null,
+    edgeDown: null,
     tradeId: null,
     skipReason: null,
     track: [],
   };
 }
 
+function barrierSourceLabel(s: BarrierSource): string {
+  if (s === 'polymarket-live') return "Polymarket's live Chainlink relay";
+  if (s === 'polymarket-onchain') return 'on-chain Chainlink, fallback';
+  return 'Binance, fallback — Chainlink unavailable';
+}
+
 function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-export { WINDOW_SEC, toBars, fillGaps, trim };
+export { WINDOW_SEC };

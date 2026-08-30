@@ -51,33 +51,18 @@ export interface Book {
   t: number;
 }
 
-// ── The forecast ────────────────────────────────────────────────────────────
-
-/**
- * What we ask the model for, and all we ask it for: a direction, and how
- * likely it thinks that direction is.
- */
-export interface Forecast {
-  side: Side;
-  /** Probability that `side` wins, 0..1. Always >= 0.5 by construction. */
-  probability: number;
-  /** Probability that the market resolves UP, derived from the two above. */
-  pUp: number;
-  latencyMs: number;
-  model: string;
-  /** Price at the moment the request was sent. */
-  priceAtRequest: number;
-  raw: string;
-}
-
 // ── The simulation ──────────────────────────────────────────────────────────
 
+/**
+ * The only model. A driftless Monte Carlo: no view is taken on direction, only
+ * on how far realised volatility could plausibly carry the price in the time
+ * left. Ignoring drift, there is no `pUpNeutral` control to compare against —
+ * this run *is* the neutral one.
+ */
 export interface Simulation {
-  /** Probability the market resolves UP, given everything realised so far. */
+  /** Share of simulated paths finishing above the barrier. */
   pUp: number;
-  /** The same run with a neutral 50/50 prior — the "does the LLM help?" control. */
-  pUpNeutral: number;
-  /** Per-second volatility used. */
+  /** Per-second volatility used, from the realised tape. */
   sigma: number;
   /** Annualised, for display. */
   volPct: number;
@@ -113,6 +98,9 @@ export interface Trade {
   error?: string;
 }
 
+/** Where a captured barrier came from, most trustworthy first. */
+export type BarrierSource = 'polymarket-live' | 'polymarket-onchain' | 'binance';
+
 /** One completed 5-minute window, traded or not. */
 export interface WindowRecord {
   id: string;
@@ -121,15 +109,11 @@ export interface WindowRecord {
   startMs: number;
   endMs: number;
   barrier: number;
+  barrierSource: BarrierSource;
   close: number | null;
   outcome: Side | null;
-  /** What the model called at the open. */
-  llmSide: Side | null;
-  llmProb: number | null;
-  llmLatencyMs: number | null;
-  /** Final simulated probability of UP, and the neutral-prior control. */
+  /** The simulation's final read of P(UP), for calibration tracking. */
   finalPUp: number | null;
-  finalPUpNeutral: number | null;
   traded: boolean;
   pnl: number | null;
   /** Why we did not trade, in one phrase. */
@@ -146,7 +130,7 @@ export interface LogLine {
 // ── Config ──────────────────────────────────────────────────────────────────
 
 /**
- * The whole configuration. Nine settings, all of them things an operator would
+ * The whole configuration. Everything here is a thing an operator would
  * actually want to change.
  */
 export interface Config {
@@ -163,8 +147,6 @@ export interface Config {
   minSecondsLeft: number;
   /** Monte Carlo paths per run. */
   paths: number;
-  /** How much of the model's opinion to apply, 0..1. */
-  llmWeight: number;
 }
 
 export interface Stats {
@@ -177,10 +159,7 @@ export interface Stats {
   today: number;
   /** Windows observed. */
   windows: number;
-  /** Brier of the simulation with the LLM prior, and without it. */
-  brierWithLlm: number | null;
-  brierNeutral: number | null;
-  /** How often the model's direction call was right. */
-  llmAccuracy: number | null;
+  /** Brier score of the simulation's final P(UP) across observed windows. */
+  brier: number | null;
   scored: number;
 }
