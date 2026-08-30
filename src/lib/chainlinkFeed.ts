@@ -24,7 +24,13 @@ import type { Tick } from './types';
  */
 
 const URL = 'wss://ws-live-data.polymarket.com';
-const SYMBOL = 'BTCUSDT';
+// Chainlink's own pair notation, lowercase and slash-separated — not the
+// exchange-style "BTCUSDT" used by the plain `crypto_prices` topic.
+// Polymarket's own Rust SDK had this exact bug (rs-clob-client#136): the
+// Chainlink topic silently returns nothing for the wrong symbol format,
+// which is the same "connects, subscribes, zero messages ever" symptom
+// this feed was showing before this fix.
+const SYMBOL = 'btc/usd';
 const PING_MS = 5000;
 const BACKOFF_MS = [1000, 2000, 5000, 10000, 20000];
 
@@ -189,7 +195,7 @@ export class ChainlinkFeed {
           this.debug(`Message with no payload: ${event.data.slice(0, 300)}`);
           return;
         }
-        if (p.symbol && p.symbol !== SYMBOL) {
+        if (p.symbol && p.symbol.toLowerCase() !== SYMBOL) {
           this.debug(`Payload for a different symbol ("${p.symbol}"), expected "${SYMBOL}"`);
           return;
         }
