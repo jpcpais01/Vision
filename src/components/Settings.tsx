@@ -87,15 +87,15 @@ export function Settings({
               disabled={config.killSwitch}
               onClick={() => onChange({ autoTrade: !config.autoTrade })}
               className={cx(
-                'relative h-6 w-11 shrink-0 rounded-full transition-colors',
+                'relative h-6 w-11 shrink-0 overflow-hidden rounded-full transition-colors',
                 config.autoTrade ? 'bg-[var(--up)]' : 'bg-[var(--line)]',
                 config.killSwitch && 'opacity-40'
               )}
             >
               <span
                 className={cx(
-                  'absolute top-1 h-4 w-4 rounded-full bg-white transition-transform',
-                  config.autoTrade ? 'translate-x-6' : 'translate-x-1'
+                  'absolute left-1 top-1 h-4 w-4 rounded-full bg-white transition-transform',
+                  config.autoTrade ? 'translate-x-5' : 'translate-x-0'
                 )}
               />
             </button>
