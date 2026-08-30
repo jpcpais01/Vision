@@ -74,7 +74,34 @@ export function returns(bars: Bar[]): number[] {
   return out;
 }
 
+/** Fold ticks into flat-size candles of `sec` seconds each. */
+export function candles(ticks: Tick[], sec: number): Bar[] {
+  const ms = sec * 1000;
+  const out: Bar[] = [];
+  for (const tick of [...ticks].sort((a, b) => a.t - b.t)) {
+    if (!(tick.p > 0)) continue;
+    const t = Math.floor(tick.t / ms) * ms;
+    const last = out[out.length - 1];
+    if (last && last.t === t) last.c = tick.p;
+    else out.push({ t, c: tick.p });
+  }
+  return out;
+}
+
 const SECONDS_PER_YEAR = 365 * 24 * 3600;
+
+/**
+ * Plain average (no EWMA) of squared returns over the last `periods` candles
+ * of `barSec` seconds each — a simple, easy-to-eyeball realised-vol readout
+ * next to the EWMA figure the simulation actually trades on.
+ */
+export function simpleVolPct(bars: Bar[], periods: number, barSec: number): number | null {
+  const r = returns(bars).slice(-periods);
+  if (r.length < 2) return null;
+  const avgSq = r.reduce((s, x) => s + x * x, 0) / r.length;
+  const sigma = Math.sqrt(avgSq / barSec);
+  return sigma * Math.sqrt(SECONDS_PER_YEAR) * 100;
+}
 
 /**
  * Per-second volatility from 10-second returns.

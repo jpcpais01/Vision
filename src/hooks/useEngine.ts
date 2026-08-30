@@ -167,6 +167,7 @@ const EMPTY: Snapshot = {
   chainlinkLive: false,
   ticks: [],
   volPct: null,
+  volPct15: null,
   cycle: {
     market: null,
     phase: 'stopped',

@@ -14,7 +14,7 @@ import type {
   WindowRecord,
 } from './types';
 import { CALIBRATION_MIN_SEC, DEFAULT_CONFIG, HISTORY_MIN, WINDOW_SEC } from './config';
-import { bucket, shiftBars, shiftTicks, trim, volatility } from './bars';
+import { bucket, candles, shiftBars, shiftTicks, simpleVolPct, trim, volatility } from './bars';
 import { quote } from './book';
 import { simulate } from './montecarlo';
 import { ChainlinkFeed } from './chainlinkFeed';
@@ -81,6 +81,8 @@ export interface Snapshot {
   chainlinkLive: boolean;
   ticks: Tick[];
   volPct: number | null;
+  /** Plain average realised vol over the last 10 15-second candles — simple readout, not what the sim trades on. */
+  volPct15: number | null;
   cycle: Cycle;
   secondsLeft: number | null;
   /** Seconds until the next window opens, when we are waiting for one. */
@@ -266,6 +268,7 @@ export class Engine {
       chainlinkLive: this.chainlinkLive,
       ticks: this.ticks.slice(-400),
       volPct: this.vol.volPct || null,
+      volPct15: simpleVolPct(candles(this.ticks.slice(-200), 15), 10, 15),
       cycle: this.cycle,
       secondsLeft: m ? (m.endMs - now) / 1000 : null,
       secondsToOpen: !m && this.market ? (this.market.startMs - now) / 1000 : null,

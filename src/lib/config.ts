@@ -13,7 +13,7 @@ export const HISTORY_MIN = 30;
  * the time it takes for the volatility estimate to be real rather than a
  * generic fallback number.
  */
-export const CALIBRATION_MIN_SEC = 300;
+export const CALIBRATION_MIN_SEC = 60;
 
 export const DEFAULT_CONFIG: Config = {
   mode: 'PAPER',

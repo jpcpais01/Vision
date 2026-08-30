@@ -102,7 +102,7 @@ export default function App() {
           <p className="mt-3 text-sm leading-relaxed text-[var(--muted)]">
             There is no seeded history — the price tape is built entirely from what has actually
             been observed since you pressed Start. It won’t trade its first window until it has
-            gathered {CALIBRATION_MIN_SEC / 60} minutes of real ticks, so the volatility estimate
+            gathered {CALIBRATION_MIN_SEC / 60} minute{CALIBRATION_MIN_SEC === 60 ? '' : 's'} of real ticks, so the volatility estimate
             behind every probability is real rather than a generic placeholder.
           </p>
           <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-[var(--line)]">
@@ -183,7 +183,7 @@ export default function App() {
         ) : (
           <p className="mt-4 border-t border-[var(--line)] pt-4 text-sm leading-relaxed text-[var(--muted)]">
             Press <strong className="text-[var(--text)]">Start</strong> and it spends
-            {' '}{CALIBRATION_MIN_SEC / 60} minutes gathering real price data, then waits for the
+            {' '}{CALIBRATION_MIN_SEC / 60} minute{CALIBRATION_MIN_SEC === 60 ? '' : 's'} gathering real price data, then waits for the
             next 5-minute window to open — it never joins one already running. The barrier is
             fetched from Polymarket’s own live Chainlink feed, never guessed, and a driftless
             Monte Carlo simulation re-checks the odds against the live price every second. It
@@ -205,6 +205,9 @@ export default function App() {
                 <span className="label">Monte Carlo read</span>
                 <span className="num text-sm text-[var(--muted)]">
                   {s.volPct ? `${s.volPct.toFixed(0)}% realised volatility` : ''}
+                </span>
+                <span className="num text-sm text-[var(--muted)]">
+                  {s.volPct15 ? `· ${s.volPct15.toFixed(0)}% avg, last 10×15s candles` : ''}
                 </span>
               </div>
 
