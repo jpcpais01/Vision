@@ -58,10 +58,10 @@ export default function App() {
 
         <span
           className="flex items-center gap-1.5 text-xs text-[var(--muted)]"
-          title="Polymarket's own live relay of the Chainlink price stream these markets settle on"
+          title="Pyth Network's live price stream — a free, aggregated BTC/USD oracle"
         >
-          <span className={cx('h-1.5 w-1.5 rounded-full', s.chainlinkLive ? 'bg-[var(--up)]' : 'bg-[var(--line)]')} />
-          Chainlink {s.chainlinkLive ? 'live' : 'offline'}
+          <span className={cx('h-1.5 w-1.5 rounded-full', s.pythLive ? 'bg-[var(--up)]' : 'bg-[var(--line)]')} />
+          Pyth {s.pythLive ? 'live' : 'offline'}
         </span>
 
         <div className="ml-auto flex items-center gap-2">
@@ -191,7 +191,7 @@ export default function App() {
             Press <strong className="text-[var(--text)]">Start</strong> and it spends
             {' '}{CALIBRATION_MIN_SEC / 60} minute{CALIBRATION_MIN_SEC === 60 ? '' : 's'} gathering real price data, then waits for the
             next 5-minute window to open — it never joins one already running. The barrier is
-            fetched from Polymarket’s own live Chainlink feed, never guessed, and a driftless
+            fetched from Pyth Network’s live price stream, never guessed, and a driftless
             Monte Carlo simulation re-checks the odds against the live price every second. It
             buys only when that beats the market’s own price by enough to be worth it.
           </p>
@@ -353,9 +353,10 @@ export default function App() {
       </section>
 
       <p className="px-1 text-center text-xs leading-relaxed text-[var(--muted)]">
-        Every price on this screen is Chainlink — Polymarket’s own live relay of the same feed
-        these markets settle on, falling back to the on-chain aggregator only when the relay has
-        nothing fresh. No other exchange’s data is ever blended in. There is no forecasting model —
+        Every price on this screen is from Pyth Network — a free, public oracle aggregating
+        BTC/USD across many exchanges and market makers, not one exchange’s own tape. Polymarket
+        itself settles on Chainlink Data Streams, which needs paid credentials to read directly;
+        Pyth is the closest free, genuinely aggregated substitute. There is no forecasting model —
         only a driftless Monte Carlo over realised volatility. Paper mode simulates fills against
         the real order book. Not financial advice.
       </p>
@@ -404,7 +405,7 @@ function SideRead({
 }
 
 function barrierSourceLabel(s: BarrierSource): string {
-  return s === 'polymarket-live' ? "Polymarket's live feed" : 'on-chain Chainlink';
+  return s === 'pyth-stream' ? "Pyth's live stream" : 'Pyth REST';
 }
 
 function phaseLabel(s: ReturnType<typeof useEngine>['snapshot']): string {

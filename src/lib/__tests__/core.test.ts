@@ -8,6 +8,7 @@ import { NormalSampler, Rng } from '../math/rng';
 import { fillGaps, returns, toBars, volatility } from '../bars';
 import { fill, quote } from '../book';
 import { discover } from '../market';
+import { BTC_USD_ID, pythLatest } from '../pyth';
 import { DEFAULT_CONFIG, sanitize } from '../config';
 import type { Bar } from '../types';
 
@@ -180,6 +181,50 @@ test('a paper fill walks real depth and reports shortfalls honestly', () => {
 
   assert.equal(fill(book, 10_000, 0.001).shares, 240, 'cannot fill beyond the book');
   assert.equal(fill({ ...book, asks: [] }, 10).shares, 0);
+});
+
+// ── Pyth ─────────────────────────────────────────────────────────────────────
+
+test('Pyth reads decode price*10^expo, with price/conf as strings per the real API', async () => {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? '', 'http://x');
+    assert.equal(url.pathname, '/v2/updates/price/latest');
+    assert.equal(url.searchParams.get('ids[]'), BTC_USD_ID);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        parsed: [
+          {
+            id: BTC_USD_ID,
+            price: { price: '6543210000000', conf: '150000000', expo: -8, publish_time: 1_800_000_000 },
+          },
+        ],
+      })
+    );
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const read = await pythLatest(`http://127.0.0.1:${port}`);
+    assert.ok(Math.abs(read.price - 65_432.1) < 1e-6, `got ${read.price}`);
+    assert.equal(read.publishedAt, 1_800_000_000_000, 'publish_time is unix seconds, converted to ms');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
+test('a malformed Pyth response is rejected rather than producing a fake price', async () => {
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ parsed: [] }));
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address() as AddressInfo;
+  try {
+    await assert.rejects(() => pythLatest(`http://127.0.0.1:${port}`));
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
 });
 
 // ── Market discovery ────────────────────────────────────────────────────────

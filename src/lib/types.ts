@@ -98,8 +98,8 @@ export interface Trade {
   error?: string;
 }
 
-/** Where a captured barrier came from, most trustworthy first. Always a genuine Chainlink read — never approximated. */
-export type BarrierSource = 'polymarket-live' | 'polymarket-onchain';
+/** Where a captured barrier came from, most trustworthy first. Always a genuine Pyth read — never approximated. */
+export type BarrierSource = 'pyth-stream' | 'pyth-rest';
 
 /** One completed 5-minute window, traded or not. */
 export interface WindowRecord {

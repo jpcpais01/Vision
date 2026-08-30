@@ -17,7 +17,7 @@ import { CALIBRATION_MIN_SEC, DEFAULT_CONFIG, HISTORY_MIN, WINDOW_SEC } from './
 import { bucket, trim, volatility } from './bars';
 import { quote } from './book';
 import { simulate } from './montecarlo';
-import { ChainlinkFeed } from './chainlinkFeed';
+import { PythFeed } from './pythFeed';
 
 /**
  * ── The loop ─────────────────────────────────────────────────────────────────
@@ -76,10 +76,10 @@ export interface Snapshot {
   feedError: string | null;
   price: number | null;
   priceAt: number;
-  /** Which of the two genuine Chainlink sources the current price came from. */
+  /** Which of the two genuine Pyth sources the current price came from. */
   priceSource: BarrierSource | null;
-  /** Whether Polymarket's own live Chainlink relay is currently connected. */
-  chainlinkLive: boolean;
+  /** Whether the live Pyth SSE stream is currently connected. */
+  pythLive: boolean;
   ticks: Tick[];
   volPct: number | null;
   cycle: Cycle;
@@ -108,9 +108,9 @@ export class Engine {
   private price: number | null = null;
   private priceAt = 0;
   private priceSource: BarrierSource | null = null;
-  private chainlinkLive = false;
-  /** Guards against overlapping polls if an RPC call runs long. */
-  private chainlinkPolling = false;
+  private pythLive = false;
+  /** Guards against overlapping polls if a request runs long. */
+  private pythPolling = false;
   private feedError: string | null = null;
   private vol = { sigma: 0, volPct: 0 };
 
@@ -124,7 +124,7 @@ export class Engine {
   private windows: WindowRecord[] = [];
   private logs: LogLine[] = [];
 
-  private readonly chainlinkFeed: ChainlinkFeed;
+  private readonly pythFeed: PythFeed;
   private timers: ReturnType<typeof setInterval>[] = [];
   private listeners = new Set<() => void>();
   private snapshot: Snapshot | null = null;
@@ -134,14 +134,14 @@ export class Engine {
   private pending = { trades: new Map<string, Trade>(), windows: new Map<string, WindowRecord>() };
 
   constructor(private headers: () => Record<string, string>) {
-    this.chainlinkFeed = new ChainlinkFeed({
+    this.pythFeed = new PythFeed({
       onTick: (tick) => {
-        this.ingestTick(tick, 'polymarket-live');
+        this.ingestTick(tick, 'pyth-stream');
         this.emit();
       },
       onStatus: (connected) => {
-        this.chainlinkLive = connected;
-        if (connected) this.log('info', 'Connected to Polymarket’s live Chainlink relay');
+        this.pythLive = connected;
+        if (connected) this.log('info', 'Connected to Pyth’s live price stream');
         this.emit();
       },
     });
@@ -168,13 +168,13 @@ export class Engine {
       `Started in ${config.mode} mode. Calibrating for ${CALIBRATION_MIN_SEC / 60} minutes before the first trade.`
     );
 
-    this.chainlinkFeed.start();
-    await this.pollChainlink(); // get a genuine price on the board immediately, don't wait on the live relay to connect
+    this.pythFeed.start();
+    await this.pollPyth(); // get a genuine price on the board immediately, don't wait on the stream to connect
 
     this.timers.push(setInterval(() => this.emit(), 1000)); // ticks the countdowns; prices also arrive via ingestTick
     this.timers.push(setInterval(() => void this.pollMarket(), 3000));
     this.timers.push(setInterval(() => this.step(), 250));
-    this.timers.push(setInterval(() => void this.pollChainlink(), 1000));
+    this.timers.push(setInterval(() => void this.pollPyth(), 1000));
     this.timers.push(setInterval(() => void this.flush(), 5000));
     this.emit();
   }
@@ -182,7 +182,7 @@ export class Engine {
   stop(): void {
     if (!this.running) return;
     this.running = false;
-    this.chainlinkFeed.stop();
+    this.pythFeed.stop();
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     this.cycle = { ...this.cycle, phase: 'stopped' };
@@ -255,14 +255,14 @@ export class Engine {
     return {
       running: this.running,
       config: this.config,
-      // The live relay ticks whenever Chainlink publishes; the on-chain fallback only
-      // every 30s. 40s covers a missed on-chain poll without flapping to "offline".
-      connected: this.chainlinkLive || (this.price !== null && now - this.priceAt < 40_000),
+      // The live stream ticks continuously; the REST fallback is polled every 1s.
+      // 40s is a generous cushion before flapping to "offline".
+      connected: this.pythLive || (this.price !== null && now - this.priceAt < 40_000),
       feedError: this.feedError,
       price: this.price,
       priceAt: this.priceAt,
       priceSource: this.priceSource,
-      chainlinkLive: this.chainlinkLive,
+      pythLive: this.pythLive,
       ticks: this.ticks.slice(-400),
       volPct: this.vol.volPct || null,
       cycle: this.cycle,
@@ -283,11 +283,11 @@ export class Engine {
   // ── Price ─────────────────────────────────────────────────────────────────
 
   /**
-   * Fold one genuine Chainlink price observation into the tape — the only
-   * way `this.price`, `this.ticks` and `this.bars` are ever updated. There
-   * is no other exchange's data blended in anywhere: every number on screen
-   * and every number the simulation trades on is Chainlink, the same asset
-   * Polymarket itself settles these markets against.
+   * Fold one genuine Pyth price observation into the tape — the only way
+   * `this.price`, `this.ticks` and `this.bars` are ever updated. Every
+   * number on screen and every number the simulation trades on comes from
+   * Pyth's aggregate of many exchanges and market makers, never a single
+   * exchange's own tape.
    */
   private ingestTick(tick: Tick, source: BarrierSource): void {
     if (!(tick.p > 0)) return;
@@ -311,30 +311,29 @@ export class Engine {
   }
 
   /**
-   * Polled once a second, market open or not — the free on-chain Chainlink
-   * aggregator. Its own stored value only actually changes on a 0.5%
-   * deviation or an hourly heartbeat, so most of these polls re-read the
-   * same round; polling every second rather than every 30s just means a
-   * real change is reflected within ~1s of landing on-chain instead of up
-   * to 30s late. Only actually folded into the tape when the live relay
-   * doesn't have anything fresher: it is a genuine oracle read, but letting
-   * it overwrite a live relay tick would make the tape worse, not better.
+   * Polled once a second, market open or not — Pyth's Hermes REST endpoint,
+   * the same aggregate the live stream carries, just pulled instead of
+   * pushed. Only actually folded into the tape when the live stream doesn't
+   * have anything fresher: it is an equally genuine read, but letting it
+   * overwrite a live tick would make the tape worse, not better. Mainly
+   * exists so the app has a real price the instant it starts, and keeps
+   * working smoothly through any stream reconnect.
    */
-  private async pollChainlink(): Promise<void> {
-    if (!this.running || this.chainlinkPolling) return;
-    this.chainlinkPolling = true;
+  private async pollPyth(): Promise<void> {
+    if (!this.running || this.pythPolling) return;
+    this.pythPolling = true;
     try {
-      const res = await fetch('/api/chainlink', { headers: this.headers(), cache: 'no-store' });
-      if (!res.ok) throw new Error(`chainlink ${res.status}`);
+      const res = await fetch('/api/pyth', { headers: this.headers(), cache: 'no-store' });
+      if (!res.ok) throw new Error(`pyth ${res.status}`);
       const d = (await res.json()) as { price?: number | null };
-      if (!d.price) throw new Error('no chainlink price');
-      if (!this.chainlinkFeed.latest()) this.ingestTick({ t: Date.now(), p: d.price }, 'polymarket-onchain');
+      if (!d.price) throw new Error('no pyth price');
+      if (!this.pythFeed.latest()) this.ingestTick({ t: Date.now(), p: d.price }, 'pyth-rest');
       this.emit();
     } catch (err) {
       if (this.price === null) this.feedError = msg(err);
       this.emit();
     } finally {
-      this.chainlinkPolling = false;
+      this.pythPolling = false;
     }
   }
 
@@ -445,36 +444,36 @@ export class Engine {
       captured ? 'info' : 'warn',
       captured
         ? `Window open. Barrier $${captured.price.toFixed(2)} (${barrierSourceLabel(captured.source)})`
-        : 'Window opened with no genuine Polymarket/Chainlink price available — sitting this one out'
+        : 'Window opened with no genuine price available — sitting this one out'
     );
     this.emit(true);
   }
 
   /**
-   * The price to beat — the exact number Polymarket itself is using, never
-   * approximated from anything else. Only two sources ever answer this,
-   * both genuine reads of the real asset:
+   * The price to beat, never approximated from anything else. Polymarket
+   * itself settles these markets on Chainlink Data Streams, which needs
+   * commercial credentials to read for free — so this uses Pyth Network
+   * instead: a free, public, no-key oracle that aggregates BTC/USD across
+   * many exchanges and market makers, rather than one exchange's own tape.
+   * Only two sources ever answer this, both genuine reads of that aggregate:
    *
-   *   1. Polymarket's own live relay of the Chainlink Data Streams feed
-   *      these markets actually settle on, if a tick has landed in the last
-   *      5s — as direct as it gets without commercial Data Streams
-   *      credentials.
-   *   2. The free on-chain Chainlink BTC/USD aggregator, fetched fresh right
-   *      now — slower-moving than the Data Stream, but a real independent
-   *      oracle read, not a guess.
+   *   1. The live Hermes SSE stream, if a tick has landed in the last 5s —
+   *      sub-second latency, pushed rather than pulled.
+   *   2. The Hermes REST endpoint, fetched fresh right now — the same
+   *      aggregate, just pulled instead of pushed.
    *
    * If neither answers, the window is sat out. There is no third, guessed
    * option — a wrong barrier is worse than no trade.
    */
   private async captureBarrier(): Promise<{ price: number; source: BarrierSource } | null> {
-    const live = this.chainlinkFeed.latest();
-    if (live) return { price: live.p, source: 'polymarket-live' };
+    const live = this.pythFeed.latest();
+    if (live) return { price: live.p, source: 'pyth-stream' };
 
     try {
-      const res = await fetch('/api/chainlink', { headers: this.headers(), cache: 'no-store' });
+      const res = await fetch('/api/pyth', { headers: this.headers(), cache: 'no-store' });
       if (res.ok) {
         const d = (await res.json()) as { price?: number | null };
-        if (d.price) return { price: d.price, source: 'polymarket-onchain' };
+        if (d.price) return { price: d.price, source: 'pyth-rest' };
       }
     } catch {
       /* neither source answered — handled by the caller */
@@ -672,7 +671,7 @@ export class Engine {
       startMs: m.startMs,
       endMs: m.endMs,
       barrier: c.barrier,
-      barrierSource: c.barrierSource ?? 'polymarket-onchain',
+      barrierSource: c.barrierSource ?? 'pyth-rest',
       close,
       outcome,
       finalPUp: c.sim?.pUp ?? null,
@@ -789,7 +788,7 @@ function idleCycle(phase: Phase): Cycle {
 }
 
 function barrierSourceLabel(s: BarrierSource): string {
-  return s === 'polymarket-live' ? "Polymarket's live Chainlink relay" : 'on-chain Chainlink, fallback';
+  return s === 'pyth-stream' ? "Pyth's live stream" : 'Pyth REST, fallback';
 }
 
 function msg(e: unknown): string {

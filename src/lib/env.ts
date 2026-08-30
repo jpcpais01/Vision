@@ -34,11 +34,9 @@ export const env = {
   apiPassphrase: () => str('POLYMARKET_API_PASSPHRASE'),
   allowLive: () => bool('ALLOW_LIVE_TRADING', false),
 
-  // Chainlink — the free on-chain aggregator, used as a fallback anchor behind
-  // Polymarket's own live relay (see chainlinkFeed.ts).
-  chainlinkRpc: () => str('CHAINLINK_RPC_URL', 'https://ethereum-rpc.publicnode.com'),
-  chainlinkFeed: () =>
-    str('CHAINLINK_BTC_USD_FEED', '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c'),
+  // Pyth Network's Hermes price service — free, public, no key. Fallback REST
+  // read behind the live SSE stream (see pythFeed.ts).
+  pythHermesUrl: () => str('PYTH_HERMES_URL', 'https://hermes.pyth.network').replace(/\/+$/, ''),
 
   // Storage
   upstashUrl: () => str('UPSTASH_REDIS_REST_URL').replace(/\/+$/, ''),

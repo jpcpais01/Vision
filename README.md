@@ -18,11 +18,10 @@ minutes than it is right now? Vision plays one cycle per window.
    already in progress — the whole bet is measured against the price at the
    open, and joining late means guessing that number.
 3. **Fetch the barrier — never guess it.** At the open, the price to beat is
-   read from **Polymarket's own live relay of the Chainlink price stream**
-   these markets actually settle on (see "About the price feed" below). If
-   that is unreachable it falls back to a fresh read of the free on-chain
-   Chainlink aggregator — never anything else — and it says which one it used,
-   in the UI and in the log. If neither answers, the window is sat out rather
+   read from **Pyth Network's live price stream** (see "About the price feed"
+   below). If that is unreachable it falls back to a fresh read of Pyth's
+   REST endpoint — never anything else — and it says which one it used, in
+   the UI and in the log. If neither answers, the window is sat out rather
    than trading on a guess.
 4. **Run the only model there is.** A driftless Monte Carlo: `paths` random
    walks are simulated forward from the *current* price, using the plain
@@ -41,32 +40,35 @@ minutes than it is right now? Vision plays one cycle per window.
 
 Polymarket settles these markets on **Chainlink Data Streams BTC/USD**, and
 Chainlink does not offer that stream for free — it needs commercial
-credentials. But Polymarket runs a **public Real-Time Data Service** that
-relays it, with no key and no auth, specifically so people can see the same
-price the markets resolve against:
+credentials, and the free public relay this app first tried (Polymarket's
+own Real-Time Data Service) turned out not to deliver usable live updates in
+practice. So instead this uses **Pyth Network**: a free, public, no-key
+oracle that aggregates BTC/USD across many exchanges and market makers —
+not one exchange's own tape, and not a guess, but also not the exact feed
+Polymarket itself settles on.
 
 ```
-wss://ws-live-data.polymarket.com
-topic: crypto_prices_chainlink
+https://hermes.pyth.network/v2/updates/price/stream   (live, SSE)
+https://hermes.pyth.network/v2/updates/price/latest    (fallback, REST)
 ```
 
-The app connects to this directly from the browser (`src/lib/chainlinkFeed.ts`)
-and uses it as the primary source for **everything** — the barrier, the live
-price on screen, and the tape the volatility estimate and chart are built
-from. No other exchange's data is ever blended in. Behind it sits exactly one
-fallback: a fresh read of the free on-chain Chainlink aggregator
-(`chainlink.ts`, much slower — it only updates on a 0.5% deviation or an
-hourly heartbeat), used only when the live relay has nothing recent. Every
-window's history records which source was actually used (`barrierSource`),
-so a fallback is always visible, never silent.
+The app connects to the stream directly from the browser
+(`src/lib/pythFeed.ts`) and uses it as the primary source for
+**everything** — the barrier, the live price on screen, and the tape the
+volatility estimate and chart are built from. No exchange's raw tape is ever
+blended in. Behind it sits exactly one fallback: a fresh read of the same
+Hermes REST endpoint (`src/lib/pyth.ts`), polled every second, used only
+when the stream has nothing recent. Every window's history records which
+source was actually used (`barrierSource`), so a fallback is always visible,
+never silent.
 
-> This repository's sandbox has no route to `polymarket.com`, so the RTDS
-> client's protocol details (endpoint, subscribe message, ping) are taken
-> directly from Polymarket's own `real-time-data-client` source on GitHub,
-> but the connection itself has not been exercised against the live
-> endpoint. If it does not connect in your deployment, the on-chain fallback
-> means the app still runs correctly, just slower to update — it will say so
-> in Activity.
+> Endpoint, price feed id, and response shape are all taken directly from
+> Pyth's own `pyth-crosschain` source on GitHub
+> (`apps/hermes/server/src/api/rest/v2/`) and its JS client README — not
+> guessed. What is not independently exercised from this sandbox (no route
+> to `hermes.pyth.network` here) is the live connection itself; the REST
+> fallback means the app still runs correctly even if the stream doesn't
+> connect in a given deployment, just polled instead of pushed.
 
 ## Setup
 
@@ -89,7 +91,7 @@ Every one of these is optional for paper trading.
 | `UPSTASH_REDIS_REST_URL` / `_TOKEN` | recommended | Keeps trade history across restarts. Without it, history lives in memory and is lost on every cold start. |
 | `POLYMARKET_PRIVATE_KEY` | live only | Polygon key holding USDC.e. |
 | `ALLOW_LIVE_TRADING` | live only | Must be exactly `true`. Live orders are refused otherwise, whatever the UI says. |
-| `CHAINLINK_RPC_URL` | no | Any Ethereum RPC, for the on-chain fallback. |
+| `PYTH_HERMES_URL` | no | Alternate Hermes gateway, if the public default is slow. |
 
 Deploy: push, import at [vercel.com/new](https://vercel.com/new), add the
 variables you want, done. No build configuration needed.
@@ -125,8 +127,8 @@ Five things, all on sliders, plus the mode:
 
 ```
 src/lib/
-  chainlink.ts       the on-chain fallback read
-  chainlinkFeed.ts   Polymarket's live Chainlink relay (browser WebSocket)
+  pyth.ts            the REST fallback read (Pyth Hermes)
+  pythFeed.ts        Pyth's live price stream (browser SSE)
   market.ts          finding the live 5-minute market
   book.ts            order book maths, and the paper fill model
   clob.ts            Polymarket reads
@@ -158,11 +160,14 @@ fields would have produced the wrong window).
 
 - **The tab must stay open.** The loop runs in the browser. Closing it stops
   trading, which is the safer default anyway.
-- **The RTDS connection is unverified**, per the caveat above. If it never
-  connects in your deployment, the tape only updates every 30 seconds (the
-  on-chain fallback's poll interval) instead of continuously.
-- **Paper settlement uses the app's own live price**, so it can disagree with
-  the on-chain result at the boundary on a very close window.
+- **The price is Pyth's aggregate, not Chainlink Data Streams.** Polymarket
+  settles on the latter, which needs paid credentials to read for free. Pyth
+  tracks the same asset closely but is not guaranteed to agree to the cent at
+  the boundary of a very close window.
+- **The live SSE connection is unverified from this sandbox** (no route to
+  `hermes.pyth.network` here), per the caveat above. If it never connects in
+  your deployment, the tape still updates every second via the REST
+  fallback, just polled instead of pushed.
 - **The edge may not exist.** A five-minute Bitcoin binary is close to a coin
   flip and Polymarket's book is not naive. Run paper mode until the numbers say
   something before risking real money.
