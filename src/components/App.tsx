@@ -148,12 +148,15 @@ export default function App() {
               <div className="num mt-1 text-xs text-[var(--muted)]">
                 needs to beat {usd(c.barrier)}
                 {c.barrierSource ? ` · ${barrierSourceLabel(c.barrierSource)}` : ''}
+                {c.barrierSource === 'binance' || c.barrierSource === 'coingecko'
+                  ? ' (fallback — not Polymarket’s exact source)'
+                  : ''}
               </div>
             ) : null}
             {s.price ? (
               <div className="num mt-1 text-xs text-[var(--muted)]">
-                updated {Math.max(0, Math.round((Date.now() - s.priceAt) / 1000))}s ago
-                {s.priceSource ? ` · ${barrierSourceLabel(s.priceSource)}` : ''}
+                display only: {s.priceSource ? barrierSourceLabel(s.priceSource) : ''}, updated{' '}
+                {Math.max(0, Math.round((Date.now() - s.priceAt) / 1000))}s ago
               </div>
             ) : null}
           </div>
