@@ -18,11 +18,9 @@ minutes than it is right now? Vision plays one cycle per window.
    already in progress — the whole bet is measured against the price at the
    open, and joining late means guessing that number.
 3. **Fetch the barrier — never guess it.** At the open, the price to beat is
-   read from **Pyth Network's live price stream** (see "About the price feed"
-   below). If that is unreachable it falls back to a fresh read of Pyth's
-   REST endpoint — never anything else — and it says which one it used, in
-   the UI and in the log. If neither answers, the window is sat out rather
-   than trading on a guess.
+   the freshest **CoinGecko** price already on hand (see "About the price
+   feed" below) — never a separate fetch, never anything else. If there is
+   no price yet, the window is sat out rather than trading on a guess.
 4. **Run the only model there is.** A driftless Monte Carlo: `paths` random
    walks are simulated forward from the *current* price, using the plain
    average realised volatility of the last 10 15-second candles, for however
@@ -40,35 +38,38 @@ minutes than it is right now? Vision plays one cycle per window.
 
 Polymarket settles these markets on **Chainlink Data Streams BTC/USD**, and
 Chainlink does not offer that stream for free — it needs commercial
-credentials, and the free public relay this app first tried (Polymarket's
-own Real-Time Data Service) turned out not to deliver usable live updates in
-practice. So instead this uses **Pyth Network**: a free, public, no-key
-oracle that aggregates BTC/USD across many exchanges and market makers —
-not one exchange's own tape, and not a guess, but also not the exact feed
-Polymarket itself settles on.
+credentials. Two free alternatives were tried and dropped before landing
+here, both for the same reason: they turned out not to be reachable from a
+real deployment, not just from this development sandbox.
+
+- **Polymarket's own Real-Time Data Service** (a public WebSocket relay of
+  the Chainlink stream) never delivered usable live updates in practice.
+- **Pyth Network's free Hermes service** looked right — endpoint, price feed
+  id and response shape were all confirmed against Pyth's own source on
+  GitHub — but its public gateway returned `Unauthorized` on every request
+  once actually deployed, for reasons that could not be diagnosed without
+  network access to it.
+
+So this now uses **CoinGecko**: a free, well-known price index that
+aggregates BTC/USD across many exchanges — not one exchange's own tape, not
+a guess, but also not the exact feed Polymarket itself settles on.
 
 ```
-https://hermes.pyth.network/v2/updates/price/stream   (live, SSE)
-https://hermes.pyth.network/v2/updates/price/latest    (fallback, REST)
+https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd
 ```
 
-The app connects to the stream directly from the browser
-(`src/lib/pythFeed.ts`) and uses it as the primary source for
-**everything** — the barrier, the live price on screen, and the tape the
-volatility estimate and chart are built from. No exchange's raw tape is ever
-blended in. Behind it sits exactly one fallback: a fresh read of the same
-Hermes REST endpoint (`src/lib/pyth.ts`), polled every second, used only
-when the stream has nothing recent. Every window's history records which
-source was actually used (`barrierSource`), so a fallback is always visible,
-never silent.
+The engine polls this every 2 seconds (`src/lib/coingecko.ts`, via
+`/api/coingecko`) as its **only** price source — the barrier, the live price
+on screen, and the tape the volatility estimate and chart are built from all
+come from it. CoinGecko has no free push/streaming option, so there is no
+separate "live" connection to track; the poll loop is the whole feed. It
+works with no key at a low rate limit; setting `COINGECKO_API_KEY` (a free
+Demo key from coingecko.com, no payment) raises the limit and is what let
+polling move from a 5–10s interval down to 2s.
 
-> Endpoint, price feed id, and response shape are all taken directly from
-> Pyth's own `pyth-crosschain` source on GitHub
-> (`apps/hermes/server/src/api/rest/v2/`) and its JS client README — not
-> guessed. What is not independently exercised from this sandbox (no route
-> to `hermes.pyth.network` here) is the live connection itself; the REST
-> fallback means the app still runs correctly even if the stream doesn't
-> connect in a given deployment, just polled instead of pushed.
+> Endpoint, query params, the `x-cg-demo-api-key` header, and the response
+> shape are all taken directly from CoinGecko's own `coingecko-typescript`
+> client source on GitHub — not guessed.
 
 ## Setup
 
@@ -91,7 +92,7 @@ Every one of these is optional for paper trading.
 | `UPSTASH_REDIS_REST_URL` / `_TOKEN` | recommended | Keeps trade history across restarts. Without it, history lives in memory and is lost on every cold start. |
 | `POLYMARKET_PRIVATE_KEY` | live only | Polygon key holding USDC.e. |
 | `ALLOW_LIVE_TRADING` | live only | Must be exactly `true`. Live orders are refused otherwise, whatever the UI says. |
-| `PYTH_HERMES_URL` | no | Alternate Hermes gateway, if the public default is slow. |
+| `COINGECKO_API_KEY` | recommended | Free Demo key from coingecko.com — raises the rate limit enough for 2s polling. Works without it, just slower and more likely to be throttled. |
 
 Deploy: push, import at [vercel.com/new](https://vercel.com/new), add the
 variables you want, done. No build configuration needed.
@@ -127,8 +128,7 @@ Five things, all on sliders, plus the mode:
 
 ```
 src/lib/
-  pyth.ts            the REST fallback read (Pyth Hermes)
-  pythFeed.ts        Pyth's live price stream (browser SSE)
+  coingecko.ts       the only price source (BTC/USD index)
   market.ts          finding the live 5-minute market
   book.ts            order book maths, and the paper fill model
   clob.ts            Polymarket reads
@@ -160,14 +160,13 @@ fields would have produced the wrong window).
 
 - **The tab must stay open.** The loop runs in the browser. Closing it stops
   trading, which is the safer default anyway.
-- **The price is Pyth's aggregate, not Chainlink Data Streams.** Polymarket
-  settles on the latter, which needs paid credentials to read for free. Pyth
-  tracks the same asset closely but is not guaranteed to agree to the cent at
-  the boundary of a very close window.
-- **The live SSE connection is unverified from this sandbox** (no route to
-  `hermes.pyth.network` here), per the caveat above. If it never connects in
-  your deployment, the tape still updates every second via the REST
-  fallback, just polled instead of pushed.
+- **The price is CoinGecko's index, not Chainlink Data Streams.** Polymarket
+  settles on the latter, which needs paid credentials to read for free.
+  CoinGecko tracks the same asset closely but is not guaranteed to agree to
+  the cent at the boundary of a very close window.
+- **The tape updates every 2 seconds, not continuously.** CoinGecko has no
+  free push/streaming option, so this is a poll loop, not a live feed. Without
+  `COINGECKO_API_KEY` the free rate limit may force this slower still.
 - **The edge may not exist.** A five-minute Bitcoin binary is close to a coin
   flip and Polymarket's book is not naive. Run paper mode until the numbers say
   something before risking real money.

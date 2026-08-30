@@ -8,7 +8,7 @@ import { NormalSampler, Rng } from '../math/rng';
 import { fillGaps, returns, toBars, volatility } from '../bars';
 import { fill, quote } from '../book';
 import { discover } from '../market';
-import { BTC_USD_ID, pythLatest } from '../pyth';
+import { coingeckoLatest } from '../coingecko';
 import { DEFAULT_CONFIG, sanitize } from '../config';
 import type { Bar } from '../types';
 
@@ -183,45 +183,38 @@ test('a paper fill walks real depth and reports shortfalls honestly', () => {
   assert.equal(fill({ ...book, asks: [] }, 10).shares, 0);
 });
 
-// ── Pyth ─────────────────────────────────────────────────────────────────────
+// ── CoinGecko ────────────────────────────────────────────────────────────────
 
-test('Pyth reads decode price*10^expo, with price/conf as strings per the real API', async () => {
+test('CoinGecko reads decode simple/price, converting last_updated_at to ms', async () => {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '', 'http://x');
-    assert.equal(url.pathname, '/v2/updates/price/latest');
-    assert.equal(url.searchParams.get('ids[]'), BTC_USD_ID);
+    assert.equal(url.pathname, '/simple/price');
+    assert.equal(url.searchParams.get('ids'), 'bitcoin');
+    assert.equal(url.searchParams.get('vs_currencies'), 'usd');
+    assert.equal(req.headers['x-cg-demo-api-key'], 'test-key');
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify({
-        parsed: [
-          {
-            id: BTC_USD_ID,
-            price: { price: '6543210000000', conf: '150000000', expo: -8, publish_time: 1_800_000_000 },
-          },
-        ],
-      })
-    );
+    res.end(JSON.stringify({ bitcoin: { usd: 65_432.1, last_updated_at: 1_800_000_000 } }));
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const { port } = server.address() as AddressInfo;
   try {
-    const read = await pythLatest(`http://127.0.0.1:${port}`);
-    assert.ok(Math.abs(read.price - 65_432.1) < 1e-6, `got ${read.price}`);
-    assert.equal(read.publishedAt, 1_800_000_000_000, 'publish_time is unix seconds, converted to ms');
+    const read = await coingeckoLatest('test-key', `http://127.0.0.1:${port}`);
+    assert.equal(read.price, 65_432.1);
+    assert.equal(read.publishedAt, 1_800_000_000_000, 'last_updated_at is unix seconds, converted to ms');
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
 });
 
-test('a malformed Pyth response is rejected rather than producing a fake price', async () => {
+test('a malformed CoinGecko response is rejected rather than producing a fake price', async () => {
   const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ parsed: [] }));
+    res.end(JSON.stringify({}));
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const { port } = server.address() as AddressInfo;
   try {
-    await assert.rejects(() => pythLatest(`http://127.0.0.1:${port}`));
+    await assert.rejects(() => coingeckoLatest('', `http://127.0.0.1:${port}`));
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }

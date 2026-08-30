@@ -34,9 +34,9 @@ export const env = {
   apiPassphrase: () => str('POLYMARKET_API_PASSPHRASE'),
   allowLive: () => bool('ALLOW_LIVE_TRADING', false),
 
-  // Pyth Network's Hermes price service — free, public, no key. Fallback REST
-  // read behind the live SSE stream (see pythFeed.ts).
-  pythHermesUrl: () => str('PYTH_HERMES_URL', 'https://hermes.pyth.network').replace(/\/+$/, ''),
+  // CoinGecko — the engine's only price source (see coingecko.ts). Works
+  // without a key at a low rate limit; a free Demo key raises the headroom.
+  coingeckoApiKey: () => str('COINGECKO_API_KEY'),
 
   // Storage
   upstashUrl: () => str('UPSTASH_REDIS_REST_URL').replace(/\/+$/, ''),

@@ -17,7 +17,6 @@ import { CALIBRATION_MIN_SEC, DEFAULT_CONFIG, HISTORY_MIN, WINDOW_SEC } from './
 import { bucket, trim, volatility } from './bars';
 import { quote } from './book';
 import { simulate } from './montecarlo';
-import { PythFeed } from './pythFeed';
 
 /**
  * ── The loop ─────────────────────────────────────────────────────────────────
@@ -34,8 +33,8 @@ import { PythFeed } from './pythFeed';
  *   2. Once calibrated, wait for a window that has not started yet, and join
  *      it at its open. Never mid-window — the barrier is the price at the
  *      open, and joining late means guessing it.
- *   3. At the open, capture the barrier from the most direct source available
- *      — see `captureBarrier`. It is never derived or guessed.
+ *   3. At the open, the barrier is the freshest genuine price already on
+ *      hand — see `begin`. It is never derived or guessed.
  *   4. Re-simulate roughly once a second for as long as the window is open,
  *      from the price right now.
  *   5. Buy whichever side — UP or DOWN — the simulation says is worth more
@@ -76,10 +75,8 @@ export interface Snapshot {
   feedError: string | null;
   price: number | null;
   priceAt: number;
-  /** Which of the two genuine Pyth sources the current price came from. */
+  /** Always 'coingecko' once a price has arrived — kept for a consistent, honest label in the UI and history. */
   priceSource: BarrierSource | null;
-  /** Whether the live Pyth SSE stream is currently connected. */
-  pythLive: boolean;
   ticks: Tick[];
   volPct: number | null;
   cycle: Cycle;
@@ -108,9 +105,8 @@ export class Engine {
   private price: number | null = null;
   private priceAt = 0;
   private priceSource: BarrierSource | null = null;
-  private pythLive = false;
   /** Guards against overlapping polls if a request runs long. */
-  private pythPolling = false;
+  private coingeckoPolling = false;
   private feedError: string | null = null;
   private vol = { sigma: 0, volPct: 0 };
 
@@ -124,7 +120,6 @@ export class Engine {
   private windows: WindowRecord[] = [];
   private logs: LogLine[] = [];
 
-  private readonly pythFeed: PythFeed;
   private timers: ReturnType<typeof setInterval>[] = [];
   private listeners = new Set<() => void>();
   private snapshot: Snapshot | null = null;
@@ -133,19 +128,7 @@ export class Engine {
   private seed = 1;
   private pending = { trades: new Map<string, Trade>(), windows: new Map<string, WindowRecord>() };
 
-  constructor(private headers: () => Record<string, string>) {
-    this.pythFeed = new PythFeed({
-      onTick: (tick) => {
-        this.ingestTick(tick, 'pyth-stream');
-        this.emit();
-      },
-      onStatus: (connected) => {
-        this.pythLive = connected;
-        if (connected) this.log('info', 'Connected to Pyth’s live price stream');
-        this.emit();
-      },
-    });
-  }
+  constructor(private headers: () => Record<string, string>) {}
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -168,13 +151,15 @@ export class Engine {
       `Started in ${config.mode} mode. Calibrating for ${CALIBRATION_MIN_SEC / 60} minutes before the first trade.`
     );
 
-    this.pythFeed.start();
-    await this.pollPyth(); // get a genuine price on the board immediately, don't wait on the stream to connect
+    await this.pollCoingecko(); // get a genuine price on the board before anything else runs
 
-    this.timers.push(setInterval(() => this.emit(), 1000)); // ticks the countdowns; prices also arrive via ingestTick
+    this.timers.push(setInterval(() => this.emit(), 1000)); // ticks the countdowns between polls
     this.timers.push(setInterval(() => void this.pollMarket(), 3000));
     this.timers.push(setInterval(() => this.step(), 250));
-    this.timers.push(setInterval(() => void this.pollPyth(), 1000));
+    // CoinGecko's free tier is rate-limited — 2s keeps well clear of it even
+    // without an API key, while still refreshing much faster than the 30s a
+    // naive "stay safe" interval would need.
+    this.timers.push(setInterval(() => void this.pollCoingecko(), 2000));
     this.timers.push(setInterval(() => void this.flush(), 5000));
     this.emit();
   }
@@ -182,7 +167,6 @@ export class Engine {
   stop(): void {
     if (!this.running) return;
     this.running = false;
-    this.pythFeed.stop();
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
     this.cycle = { ...this.cycle, phase: 'stopped' };
@@ -255,14 +239,12 @@ export class Engine {
     return {
       running: this.running,
       config: this.config,
-      // The live stream ticks continuously; the REST fallback is polled every 1s.
-      // 40s is a generous cushion before flapping to "offline".
-      connected: this.pythLive || (this.price !== null && now - this.priceAt < 40_000),
+      // Polled every 2s; 10s is a generous cushion before flapping to "offline".
+      connected: this.price !== null && now - this.priceAt < 10_000,
       feedError: this.feedError,
       price: this.price,
       priceAt: this.priceAt,
       priceSource: this.priceSource,
-      pythLive: this.pythLive,
       ticks: this.ticks.slice(-400),
       volPct: this.vol.volPct || null,
       cycle: this.cycle,
@@ -283,17 +265,16 @@ export class Engine {
   // ── Price ─────────────────────────────────────────────────────────────────
 
   /**
-   * Fold one genuine Pyth price observation into the tape — the only way
-   * `this.price`, `this.ticks` and `this.bars` are ever updated. Every
+   * Fold one genuine CoinGecko price observation into the tape — the only
+   * way `this.price`, `this.ticks` and `this.bars` are ever updated. Every
    * number on screen and every number the simulation trades on comes from
-   * Pyth's aggregate of many exchanges and market makers, never a single
-   * exchange's own tape.
+   * this one source, a real cross-exchange aggregate, never a guess.
    */
-  private ingestTick(tick: Tick, source: BarrierSource): void {
+  private ingestTick(tick: Tick): void {
     if (!(tick.p > 0)) return;
     this.price = tick.p;
     this.priceAt = tick.t;
-    this.priceSource = source;
+    this.priceSource = 'coingecko';
     this.feedError = null;
     this.ticks.push(tick);
     if (this.ticks.length > MAX_TICKS) this.ticks = this.ticks.slice(-MAX_TICKS);
@@ -311,29 +292,25 @@ export class Engine {
   }
 
   /**
-   * Polled once a second, market open or not — Pyth's Hermes REST endpoint,
-   * the same aggregate the live stream carries, just pulled instead of
-   * pushed. Only actually folded into the tape when the live stream doesn't
-   * have anything fresher: it is an equally genuine read, but letting it
-   * overwrite a live tick would make the tape worse, not better. Mainly
-   * exists so the app has a real price the instant it starts, and keeps
-   * working smoothly through any stream reconnect.
+   * The engine's only price poll, market open or not. CoinGecko has no free
+   * push/streaming option, so this interval is the entire live feed — see
+   * `start()` for why it runs every 2s rather than every 1s.
    */
-  private async pollPyth(): Promise<void> {
-    if (!this.running || this.pythPolling) return;
-    this.pythPolling = true;
+  private async pollCoingecko(): Promise<void> {
+    if (!this.running || this.coingeckoPolling) return;
+    this.coingeckoPolling = true;
     try {
-      const res = await fetch('/api/pyth', { headers: this.headers(), cache: 'no-store' });
-      if (!res.ok) throw new Error(`pyth ${res.status}`);
+      const res = await fetch('/api/coingecko', { headers: this.headers(), cache: 'no-store' });
+      if (!res.ok) throw new Error(`coingecko ${res.status}`);
       const d = (await res.json()) as { price?: number | null };
-      if (!d.price) throw new Error('no pyth price');
-      if (!this.pythFeed.latest()) this.ingestTick({ t: Date.now(), p: d.price }, 'pyth-rest');
+      if (!d.price) throw new Error('no coingecko price');
+      this.ingestTick({ t: Date.now(), p: d.price });
       this.emit();
     } catch (err) {
       if (this.price === null) this.feedError = msg(err);
       this.emit();
     } finally {
-      this.pythPolling = false;
+      this.coingeckoPolling = false;
     }
   }
 
@@ -426,59 +403,30 @@ export class Engine {
     if (now - this.lastSimAt >= 950) this.update();
   }
 
+  /**
+   * The price to beat, captured synchronously — no fetch, no delay, right at
+   * the open. `this.price` is already the freshest CoinGecko read on hand
+   * (the poll loop keeps it current), and there is no second source to try:
+   * Polymarket itself settles on Chainlink Data Streams, which needs paid
+   * credentials to read for free, and neither Polymarket's own free relay
+   * nor Pyth Network's free oracle turned out to be reachable in practice —
+   * see the README for that history. If there is no price at all yet, the
+   * window is sat out rather than trading on a guess.
+   */
   private begin(m: Market): void {
-    // Claim the slot synchronously: step() runs every 250ms and this.cycle
-    // .market must stop being null right away, or the async barrier fetch
-    // below would let a second tick re-enter and start the window twice.
-    this.cycle = { ...idleCycle('tracking'), market: m };
-    this.emit(true);
-    void this.openWindow(m);
-  }
-
-  private async openWindow(m: Market): Promise<void> {
-    const captured = await this.captureBarrier();
-    if (this.cycle.market?.id !== m.id) return; // rolled over while we waited
-
-    this.cycle = { ...this.cycle, barrier: captured?.price ?? null, barrierSource: captured?.source ?? null };
+    this.cycle = {
+      ...idleCycle('tracking'),
+      market: m,
+      barrier: this.price,
+      barrierSource: this.price !== null ? 'coingecko' : null,
+    };
     this.log(
-      captured ? 'info' : 'warn',
-      captured
-        ? `Window open. Barrier $${captured.price.toFixed(2)} (${barrierSourceLabel(captured.source)})`
+      this.price !== null ? 'info' : 'warn',
+      this.price !== null
+        ? `Window open. Barrier $${this.price.toFixed(2)} (CoinGecko)`
         : 'Window opened with no genuine price available — sitting this one out'
     );
     this.emit(true);
-  }
-
-  /**
-   * The price to beat, never approximated from anything else. Polymarket
-   * itself settles these markets on Chainlink Data Streams, which needs
-   * commercial credentials to read for free — so this uses Pyth Network
-   * instead: a free, public, no-key oracle that aggregates BTC/USD across
-   * many exchanges and market makers, rather than one exchange's own tape.
-   * Only two sources ever answer this, both genuine reads of that aggregate:
-   *
-   *   1. The live Hermes SSE stream, if a tick has landed in the last 5s —
-   *      sub-second latency, pushed rather than pulled.
-   *   2. The Hermes REST endpoint, fetched fresh right now — the same
-   *      aggregate, just pulled instead of pushed.
-   *
-   * If neither answers, the window is sat out. There is no third, guessed
-   * option — a wrong barrier is worse than no trade.
-   */
-  private async captureBarrier(): Promise<{ price: number; source: BarrierSource } | null> {
-    const live = this.pythFeed.latest();
-    if (live) return { price: live.p, source: 'pyth-stream' };
-
-    try {
-      const res = await fetch('/api/pyth', { headers: this.headers(), cache: 'no-store' });
-      if (res.ok) {
-        const d = (await res.json()) as { price?: number | null };
-        if (d.price) return { price: d.price, source: 'pyth-rest' };
-      }
-    } catch {
-      /* neither source answered — handled by the caller */
-    }
-    return null;
   }
 
   /** Re-simulate from the price now, once a second, until the window closes. */
@@ -671,7 +619,7 @@ export class Engine {
       startMs: m.startMs,
       endMs: m.endMs,
       barrier: c.barrier,
-      barrierSource: c.barrierSource ?? 'pyth-rest',
+      barrierSource: c.barrierSource ?? 'coingecko',
       close,
       outcome,
       finalPUp: c.sim?.pUp ?? null,
@@ -785,10 +733,6 @@ function idleCycle(phase: Phase): Cycle {
     skipReason: null,
     track: [],
   };
-}
-
-function barrierSourceLabel(s: BarrierSource): string {
-  return s === 'pyth-stream' ? "Pyth's live stream" : 'Pyth REST, fallback';
 }
 
 function msg(e: unknown): string {
