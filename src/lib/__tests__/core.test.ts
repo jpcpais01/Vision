@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { simulate } from '../montecarlo';
 import { normCdf, normInv } from '../math/normal';
 import { NormalSampler, Rng } from '../math/rng';
-import { fillGaps, returns, shiftBars, shiftTicks, toBars, volatility } from '../bars';
+import { fillGaps, returns, shiftBars, shiftTicks, toBars, twap, volatility } from '../bars';
 import { fill, quote } from '../book';
 import { discover } from '../market';
 import { DEFAULT_CONFIG, sanitize } from '../config';
@@ -103,54 +103,64 @@ test('the same seed replays exactly', () => {
 
 // ── Bars and volatility ─────────────────────────────────────────────────────
 
-test('ticks fold into aligned 10-second closes', () => {
+test('ticks fold into aligned 15-second closes', () => {
   const base = 1_800_000_000_000;
   const bars = toBars([
     { t: base + 1000, p: 100 },
-    { t: base + 9000, p: 98 },
-    { t: base + 11_000, p: 101 },
+    { t: base + 14_000, p: 98 },
+    { t: base + 16_000, p: 101 },
   ]);
   assert.equal(bars.length, 2);
   assert.equal(bars[0].c, 98, 'the last tick in the bucket is the close');
-  assert.equal(bars[1].t - bars[0].t, 10_000);
+  assert.equal(bars[1].t - bars[0].t, 15_000);
 });
 
 test('gaps are filled flat so the series stays evenly spaced', () => {
   const filled = fillGaps([
     { t: 0, c: 1 },
-    { t: 40_000, c: 2 },
+    { t: 60_000, c: 2 }, // a 4-bar gap at the 15s bar size
   ]);
   assert.equal(filled.length, 5);
   assert.equal(filled[1].c, 1, 'a gap contributes no return');
   assert.equal(returns(filled).filter((r) => r !== 0).length, 1);
 });
 
-test('volatility recovers a known sigma and is not fooled by a flat series', () => {
+test('volatility recovers a known sigma from a plain average of the last 10 returns', () => {
   const s = new NormalSampler(new Rng(4));
-  const sigma10s = SIGMA * Math.sqrt(10);
+  const sigma15s = SIGMA * Math.sqrt(15);
   let p = 100_000;
   const bars: Bar[] = [];
-  for (let i = 0; i < 300; i++) {
-    p *= Math.exp(s.next() * sigma10s);
-    bars.push({ t: i * 10_000, c: p });
+  for (let i = 0; i < 40; i++) {
+    p *= Math.exp(s.next() * sigma15s);
+    bars.push({ t: i * 15_000, c: p });
   }
   const est = volatility(bars);
-  assert.ok(Math.abs(est.sigma - SIGMA) / SIGMA < 0.3, `got ${est.sigma} vs ${SIGMA}`);
+  assert.ok(Math.abs(est.sigma - SIGMA) / SIGMA < 0.5, `got ${est.sigma} vs ${SIGMA}`);
+  assert.equal(est.samples, 10, 'only the last 10 returns are used');
 
   const empty = volatility([]);
   assert.ok(empty.sigma > 0, 'never zero — that would make every edge look infinite');
 });
 
-test('30 minutes of real 10-second bars easily clears the 10-return floor', () => {
-  // The engine requires CALIBRATION_MIN_SEC (5 minutes) of live ticks before
-  // it will trade its first window. At one bar per 10 seconds that is 30
-  // bars — comfortably past the point where volatility() stops using its
-  // generic fallback and starts reading the real tape.
-  const bars: Bar[] = Array.from({ length: 30 }, (_, i) => ({ t: i * 10_000, c: 100_000 + i * 3 }));
+test('a couple of minutes of real 15-second bars clears the fallback', () => {
+  // 11 bars gives 10 returns — the full window volatility() looks at.
+  const bars: Bar[] = Array.from({ length: 11 }, (_, i) => ({ t: i * 15_000, c: 100_000 + i * 3 }));
   const est = volatility(bars);
   assert.ok(est.sigma > 0);
   // A steadily rising series with no noise has a real, tiny, non-fallback sigma.
   assert.ok(est.volPct < 45, `expected a real estimate below the 45% fallback, got ${est.volPct}`);
+});
+
+test('the TWAP is a flat average of an unmoving tape, and ignores what fell outside the window', () => {
+  const now = 1_800_000_000_000;
+  const ticks = [
+    { t: now - 90_000, p: 999 }, // outside the 60s window — must not count
+    { t: now - 60_000, p: 100 },
+    { t: now - 30_000, p: 100 },
+    { t: now, p: 100 },
+  ];
+  assert.equal(twap(ticks, 60_000, now), 100);
+  assert.equal(twap([], 60_000, now), null);
 });
 
 // ── Chainlink anchor offset ─────────────────────────────────────────────────

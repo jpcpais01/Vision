@@ -204,10 +204,7 @@ export default function App() {
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <span className="label">Monte Carlo read</span>
                 <span className="num text-sm text-[var(--muted)]">
-                  {s.volPct ? `${s.volPct.toFixed(0)}% realised volatility` : ''}
-                </span>
-                <span className="num text-sm text-[var(--muted)]">
-                  {s.volPct15 ? `· ${s.volPct15.toFixed(0)}% avg, last 10×15s candles` : ''}
+                  {s.volPct ? `${s.volPct.toFixed(0)}% volatility — avg of the last 10×15s candles` : ''}
                 </span>
               </div>
 

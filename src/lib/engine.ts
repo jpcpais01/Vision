@@ -14,7 +14,7 @@ import type {
   WindowRecord,
 } from './types';
 import { CALIBRATION_MIN_SEC, DEFAULT_CONFIG, HISTORY_MIN, WINDOW_SEC } from './config';
-import { bucket, candles, shiftBars, shiftTicks, simpleVolPct, trim, volatility } from './bars';
+import { bucket, shiftBars, shiftTicks, trim, twap, volatility } from './bars';
 import { quote } from './book';
 import { simulate } from './montecarlo';
 import { ChainlinkFeed } from './chainlinkFeed';
@@ -81,8 +81,6 @@ export interface Snapshot {
   chainlinkLive: boolean;
   ticks: Tick[];
   volPct: number | null;
-  /** Plain average realised vol over the last 10 15-second candles — simple readout, not what the sim trades on. */
-  volPct15: number | null;
   cycle: Cycle;
   secondsLeft: number | null;
   /** Seconds until the next window opens, when we are waiting for one. */
@@ -268,7 +266,6 @@ export class Engine {
       chainlinkLive: this.chainlinkLive,
       ticks: this.ticks.slice(-400),
       volPct: this.vol.volPct || null,
-      volPct15: simpleVolPct(candles(this.ticks.slice(-200), 15), 10, 15),
       cycle: this.cycle,
       secondsLeft: m ? (m.endMs - now) / 1000 : null,
       secondsToOpen: !m && this.market ? (this.market.startMs - now) / 1000 : null,
@@ -313,7 +310,7 @@ export class Engine {
       // actually been observed, so it grows toward this width rather than
       // starting there.
       this.bars = trim(this.bars, HISTORY_MIN, this.priceAt);
-      if (this.bars.length % 6 === 0) this.vol = volatility(this.bars);
+      this.vol = volatility(this.bars);
       this.emit();
     } catch (err) {
       this.feedError = msg(err);
@@ -478,25 +475,27 @@ export class Engine {
   /**
    * The price to beat, read synchronously off whatever we already have —
    * never fetched fresh at the open, since that is exactly the delay that
-   * left the cycle blank right when a window starts. `this.price` is
-   * continuously re-anchored to Chainlink already (via `applyChainlinkAnchor`,
-   * fired by both the live relay and the on-chain fallback poll), so it is
-   * already the right number most of the time — this just picks the most
-   * direct source currently on hand and labels it honestly:
+   * left the cycle blank right when a window starts.
    *
    *   1. Polymarket's own live relay of the Chainlink stream, if a tick has
    *      landed in the last 5s — as direct as it gets without commercial
    *      Data Streams credentials.
-   *   2. `this.price`, labelled by how recently it was last anchored to a
-   *      genuine Chainlink read (the relay or the 30s on-chain poll) versus
-   *      running pure Binance since.
+   *   2. A 60-second time-weighted average of our own tape (already
+   *      continuously re-anchored to Chainlink via `applyChainlinkAnchor`,
+   *      from both the live relay and the on-chain fallback poll). Chainlink's
+   *      own BTC/USD Data Streams report for these markets is itself a
+   *      60-second TWAP, not a single instantaneous tick — so a spot read is
+   *      the wrong shape of number to compare against even when it is
+   *      correctly anchored. Averaging our last 60s the same way gets much
+   *      closer, without any extra network round trip.
    */
   private captureBarrier(): { price: number; source: BarrierSource } | null {
     const live = this.chainlinkFeed.latest();
     if (live) return { price: live.p, source: 'polymarket-live' };
-    if (this.price === null) return null;
+    const price = twap(this.ticks, 60_000) ?? this.price;
+    if (price === null) return null;
     const anchored = Date.now() - this.lastAnchorAt < 45_000;
-    return { price: this.price, source: anchored ? 'polymarket-onchain' : 'binance' };
+    return { price, source: anchored ? 'polymarket-onchain' : 'binance' };
   }
 
   /** Re-simulate from the price now, once a second, until the window closes. */
@@ -509,7 +508,7 @@ export class Engine {
     this.lastSimAt = now;
     const remaining = Math.max(0, (m.endMs - now) / 1000);
 
-    if (this.bars.length >= 12) this.vol = volatility(this.bars);
+    this.vol = volatility(this.bars);
 
     const sim = simulate({
       barrier: c.barrier,

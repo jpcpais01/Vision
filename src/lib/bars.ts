@@ -19,7 +19,7 @@ export function bucket(t: number): number {
   return Math.floor(t / BAR_MS) * BAR_MS;
 }
 
-/** Fold ticks into 10-second closes. */
+/** Fold ticks into BAR_SEC-second closes. */
 export function toBars(ticks: Tick[]): Bar[] {
   const out: Bar[] = [];
   for (const tick of [...ticks].sort((a, b) => a.t - b.t)) {
@@ -74,58 +74,47 @@ export function returns(bars: Bar[]): number[] {
   return out;
 }
 
-/** Fold ticks into flat-size candles of `sec` seconds each. */
-export function candles(ticks: Tick[], sec: number): Bar[] {
-  const ms = sec * 1000;
-  const out: Bar[] = [];
-  for (const tick of [...ticks].sort((a, b) => a.t - b.t)) {
-    if (!(tick.p > 0)) continue;
-    const t = Math.floor(tick.t / ms) * ms;
-    const last = out[out.length - 1];
-    if (last && last.t === t) last.c = tick.p;
-    else out.push({ t, c: tick.p });
+/**
+ * Time-weighted average of ticks over the trailing `windowMs` — the same
+ * methodology Chainlink's own BTC/USD Data Streams TWAP report uses, so our
+ * fallback barrier (when the live relay tick isn't available) is built the
+ * same way rather than read off a single instantaneous price.
+ */
+export function twap(ticks: Tick[], windowMs: number, now = Date.now()): number | null {
+  const cutoff = now - windowMs;
+  const recent = ticks.filter((t) => t.t >= cutoff && t.p > 0);
+  if (recent.length === 0) return null;
+  if (recent.length === 1) return recent[0].p;
+
+  const sorted = [...recent].sort((a, b) => a.t - b.t);
+  let weighted = 0;
+  let span = 0;
+  for (let i = 1; i < sorted.length; i++) {
+    const dt = sorted[i].t - sorted[i - 1].t;
+    weighted += ((sorted[i - 1].p + sorted[i].p) / 2) * dt;
+    span += dt;
   }
-  return out;
+  return span > 0 ? weighted / span : sorted[sorted.length - 1].p;
 }
 
 const SECONDS_PER_YEAR = 365 * 24 * 3600;
 
 /**
- * Plain average (no EWMA) of squared returns over the last `periods` candles
- * of `barSec` seconds each — a simple, easy-to-eyeball realised-vol readout
- * next to the EWMA figure the simulation actually trades on.
- */
-export function simpleVolPct(bars: Bar[], periods: number, barSec: number): number | null {
-  const r = returns(bars).slice(-periods);
-  if (r.length < 2) return null;
-  const avgSq = r.reduce((s, x) => s + x * x, 0) / r.length;
-  const sigma = Math.sqrt(avgSq / barSec);
-  return sigma * Math.sqrt(SECONDS_PER_YEAR) * 100;
-}
-
-/**
- * Per-second volatility from 10-second returns.
- *
- * EWMA weighted toward the recent (λ=0.97 over 10s bars is roughly a 5-minute
- * half-life), because volatility five minutes ago tells you much more about the
- * next five minutes than volatility half an hour ago does.
+ * Volatility as a plain average of squared returns over the last 10 bars
+ * (10 periods of BAR_SEC seconds each) — no EWMA, no long warm-up. This is
+ * exactly the number the Monte Carlo simulation runs on.
  */
 export function volatility(bars: Bar[]): { sigma: number; volPct: number; samples: number } {
-  const r = returns(bars);
-  if (r.length < 10) {
+  const r = returns(bars).slice(-10);
+  if (r.length < 2) {
     // Not enough tape yet. A typical BTC level beats pretending vol is zero,
     // which would make every edge look enormous.
     const sigma = 0.45 / Math.sqrt(SECONDS_PER_YEAR);
     return { sigma, volPct: 45, samples: r.length };
   }
 
-  const seed = Math.min(r.length, 30);
-  let v = 0;
-  for (let i = 0; i < seed; i++) v += r[i] * r[i];
-  v /= seed;
-  for (let i = seed; i < r.length; i++) v = 0.97 * v + 0.03 * r[i] * r[i];
-
-  const sigma = Math.sqrt(Math.max(v, 1e-16) / BAR_SEC);
+  const avgSq = r.reduce((s, x) => s + x * x, 0) / r.length;
+  const sigma = Math.sqrt(Math.max(avgSq, 1e-16) / BAR_SEC);
   return {
     sigma,
     volPct: sigma * Math.sqrt(SECONDS_PER_YEAR) * 100,

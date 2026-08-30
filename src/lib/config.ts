@@ -3,7 +3,7 @@ import type { Config } from './types';
 /** The 5-minute window, in seconds. */
 export const WINDOW_SEC = 300;
 /** History bar size, in seconds. */
-export const BAR_SEC = 10;
+export const BAR_SEC = 15;
 /** Rolling width of the price history the engine keeps, in minutes. */
 export const HISTORY_MIN = 30;
 /**
