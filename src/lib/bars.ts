@@ -74,29 +74,6 @@ export function returns(bars: Bar[]): number[] {
   return out;
 }
 
-/**
- * Time-weighted average of ticks over the trailing `windowMs` — the same
- * methodology Chainlink's own BTC/USD Data Streams TWAP report uses, so our
- * fallback barrier (when the live relay tick isn't available) is built the
- * same way rather than read off a single instantaneous price.
- */
-export function twap(ticks: Tick[], windowMs: number, now = Date.now()): number | null {
-  const cutoff = now - windowMs;
-  const recent = ticks.filter((t) => t.t >= cutoff && t.p > 0);
-  if (recent.length === 0) return null;
-  if (recent.length === 1) return recent[0].p;
-
-  const sorted = [...recent].sort((a, b) => a.t - b.t);
-  let weighted = 0;
-  let span = 0;
-  for (let i = 1; i < sorted.length; i++) {
-    const dt = sorted[i].t - sorted[i - 1].t;
-    weighted += ((sorted[i - 1].p + sorted[i].p) / 2) * dt;
-    span += dt;
-  }
-  return span > 0 ? weighted / span : sorted[sorted.length - 1].p;
-}
-
 const SECONDS_PER_YEAR = 365 * 24 * 3600;
 
 /**

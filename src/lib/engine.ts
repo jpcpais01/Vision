@@ -14,7 +14,7 @@ import type {
   WindowRecord,
 } from './types';
 import { CALIBRATION_MIN_SEC, DEFAULT_CONFIG, HISTORY_MIN, WINDOW_SEC } from './config';
-import { bucket, shiftBars, shiftTicks, trim, twap, volatility } from './bars';
+import { bucket, shiftBars, shiftTicks, trim, volatility } from './bars';
 import { quote } from './book';
 import { simulate } from './montecarlo';
 import { ChainlinkFeed } from './chainlinkFeed';
@@ -109,8 +109,6 @@ export class Engine {
   private rawPrice: number | null = null;
   /** Added to every Binance price. Re-levelled whenever a fresh Chainlink read arrives. */
   private offset = 0;
-  /** When the offset was last re-levelled against a genuine Chainlink read. */
-  private lastAnchorAt = 0;
   private priceAt = 0;
   private chainlinkGap: number | null = null;
   private chainlinkLive = false;
@@ -351,7 +349,6 @@ export class Engine {
    * polling every second.
    */
   private applyChainlinkAnchor(chainlinkPrice: number): void {
-    this.lastAnchorAt = Date.now();
     if (this.rawPrice === null) return;
     const nextOffset = chainlinkPrice - this.rawPrice;
     const delta = nextOffset - this.offset;
@@ -453,49 +450,58 @@ export class Engine {
   }
 
   private begin(m: Market): void {
-    // Claim the slot and capture the barrier synchronously, right at the
-    // open — no awaiting, so there is no window during which the cycle sits
-    // blank while a fetch is in flight.
-    const captured = this.captureBarrier();
-    this.cycle = {
-      ...idleCycle('tracking'),
-      market: m,
-      barrier: captured?.price ?? null,
-      barrierSource: captured?.source ?? null,
-    };
+    // Claim the slot synchronously: step() runs every 250ms and this.cycle
+    // .market must stop being null right away, or the async barrier fetch
+    // below would let a second tick re-enter and start the window twice.
+    this.cycle = { ...idleCycle('tracking'), market: m };
+    this.emit(true);
+    void this.openWindow(m);
+  }
+
+  private async openWindow(m: Market): Promise<void> {
+    const captured = await this.captureBarrier();
+    if (this.cycle.market?.id !== m.id) return; // rolled over while we waited
+
+    this.cycle = { ...this.cycle, barrier: captured?.price ?? null, barrierSource: captured?.source ?? null };
     this.log(
       captured ? 'info' : 'warn',
       captured
         ? `Window open. Barrier $${captured.price.toFixed(2)} (${barrierSourceLabel(captured.source)})`
-        : 'Window opened with no price available anywhere — sitting this one out'
+        : 'Window opened with no genuine Polymarket/Chainlink price available — sitting this one out'
     );
     this.emit(true);
   }
 
   /**
-   * The price to beat, read synchronously off whatever we already have —
-   * never fetched fresh at the open, since that is exactly the delay that
-   * left the cycle blank right when a window starts.
+   * The price to beat — the exact number Polymarket itself is using, never
+   * approximated from our own Binance-derived tape. Only two sources ever
+   * answer this, both genuine reads of the real asset:
    *
-   *   1. Polymarket's own live relay of the Chainlink stream, if a tick has
-   *      landed in the last 5s — as direct as it gets without commercial
-   *      Data Streams credentials.
-   *   2. A 60-second time-weighted average of our own tape (already
-   *      continuously re-anchored to Chainlink via `applyChainlinkAnchor`,
-   *      from both the live relay and the on-chain fallback poll). Chainlink's
-   *      own BTC/USD Data Streams report for these markets is itself a
-   *      60-second TWAP, not a single instantaneous tick — so a spot read is
-   *      the wrong shape of number to compare against even when it is
-   *      correctly anchored. Averaging our last 60s the same way gets much
-   *      closer, without any extra network round trip.
+   *   1. Polymarket's own live relay of the Chainlink Data Streams feed
+   *      these markets actually settle on, if a tick has landed in the last
+   *      5s — as direct as it gets without commercial Data Streams
+   *      credentials.
+   *   2. The free on-chain Chainlink BTC/USD aggregator, fetched fresh right
+   *      now — slower-moving than the Data Stream, but a real independent
+   *      oracle read, not a guess.
+   *
+   * If neither answers, the window is sat out. There is no third, guessed
+   * option — a wrong barrier is worse than no trade.
    */
-  private captureBarrier(): { price: number; source: BarrierSource } | null {
+  private async captureBarrier(): Promise<{ price: number; source: BarrierSource } | null> {
     const live = this.chainlinkFeed.latest();
     if (live) return { price: live.p, source: 'polymarket-live' };
-    const price = twap(this.ticks, 60_000) ?? this.price;
-    if (price === null) return null;
-    const anchored = Date.now() - this.lastAnchorAt < 45_000;
-    return { price, source: anchored ? 'polymarket-onchain' : 'binance' };
+
+    try {
+      const res = await fetch('/api/chainlink', { headers: this.headers(), cache: 'no-store' });
+      if (res.ok) {
+        const d = (await res.json()) as { price?: number | null };
+        if (d.price) return { price: d.price, source: 'polymarket-onchain' };
+      }
+    } catch {
+      /* neither source answered — handled by the caller */
+    }
+    return null;
   }
 
   /** Re-simulate from the price now, once a second, until the window closes. */

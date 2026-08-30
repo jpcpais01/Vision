@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { simulate } from '../montecarlo';
 import { normCdf, normInv } from '../math/normal';
 import { NormalSampler, Rng } from '../math/rng';
-import { fillGaps, returns, shiftBars, shiftTicks, toBars, twap, volatility } from '../bars';
+import { fillGaps, returns, shiftBars, shiftTicks, toBars, volatility } from '../bars';
 import { fill, quote } from '../book';
 import { discover } from '../market';
 import { DEFAULT_CONFIG, sanitize } from '../config';
@@ -149,18 +149,6 @@ test('a couple of minutes of real 15-second bars clears the fallback', () => {
   assert.ok(est.sigma > 0);
   // A steadily rising series with no noise has a real, tiny, non-fallback sigma.
   assert.ok(est.volPct < 45, `expected a real estimate below the 45% fallback, got ${est.volPct}`);
-});
-
-test('the TWAP is a flat average of an unmoving tape, and ignores what fell outside the window', () => {
-  const now = 1_800_000_000_000;
-  const ticks = [
-    { t: now - 90_000, p: 999 }, // outside the 60s window — must not count
-    { t: now - 60_000, p: 100 },
-    { t: now - 30_000, p: 100 },
-    { t: now, p: 100 },
-  ];
-  assert.equal(twap(ticks, 60_000, now), 100);
-  assert.equal(twap([], 60_000, now), null);
 });
 
 // ── Chainlink anchor offset ─────────────────────────────────────────────────
