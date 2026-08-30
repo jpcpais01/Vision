@@ -1,4 +1,4 @@
-import WebSocket, { RawData } from 'ws';
+import { RealTimeDataClient } from '@polymarket/real-time-data-client';
 import { handler, ok } from '@/lib/api';
 
 export const runtime = 'nodejs';
@@ -7,103 +7,63 @@ export const dynamic = 'force-dynamic';
 /**
  * A one-shot diagnostic, not part of the trading engine's own path.
  *
- * Round 1 ruled out the WebSocket handshake's `Origin` header as a gate.
- * Round 2 ruled out topic choice (`crypto_prices_chainlink` vs the plainer
- * `crypto_prices`) — both subscribe cleanly and both then receive zero
- * messages within 7s.
- *
- * Round 3: is "zero messages" actually true, or is it "zero *text* frames"?
- * The `ws` package's `message` event carries an `isBinary` flag, and the
- * official Polymarket client only ever checks `typeof data === "string"` —
- * if the server ever answers with a binary frame (compression negotiation,
- * a different content-type on this route, anything), both our code and
- * their own reference client would silently treat it as nothing. This
- * captures frame type and raw bytes directly, and waits longer in case the
- * first tick is just slow to arrive rather than never arriving.
+ * Rounds 1-3 (Origin header, topic choice, binary-frame decoding) all ruled
+ * out our own hand-rolled reimplementation as the problem — connects,
+ * subscribes cleanly, then zero frames for 20s either way. This round
+ * removes every last chance of a transcription mismatch by running
+ * Polymarket's own unmodified `@polymarket/real-time-data-client` package,
+ * calling it exactly the way their README does. If this also gets nothing,
+ * the problem is not in anything we wrote.
  */
 
-const URL = 'wss://ws-live-data.polymarket.com';
 const TIMEOUT_MS = 20000;
 
-interface Frame {
-  atMs: number;
-  isBinary: boolean;
-  byteLength: number;
-  hex: string;
-  text: string;
+interface Result {
+  connected: boolean;
+  messages: unknown[];
+  disconnectedEvents: number;
 }
 
-interface Attempt {
-  label: string;
-  opened: boolean;
-  frames: Frame[];
-  error: string | null;
-  closedCode: number | null;
-  closedReason: string | null;
-}
-
-function tryConnect(label: string, topic: string): Promise<Attempt> {
+function run(): Promise<Result> {
   return new Promise((resolve) => {
-    const start = Date.now();
-    const result: Attempt = {
-      label,
-      opened: false,
-      frames: [],
-      error: null,
-      closedCode: null,
-      closedReason: null,
-    };
+    const result: Result = { connected: false, messages: [], disconnectedEvents: 0 };
     let done = false;
-    const ws = new WebSocket(URL);
+    let client: RealTimeDataClient;
 
     const finish = () => {
       if (done) return;
       done = true;
       clearTimeout(timer);
       try {
-        ws.close();
+        client.disconnect();
       } catch {
-        /* already closing */
+        /* already closed */
       }
       resolve(result);
     };
     const timer = setTimeout(finish, TIMEOUT_MS);
 
-    ws.on('open', () => {
-      result.opened = true;
-      ws.send(
-        JSON.stringify({
-          action: 'subscribe',
-          subscriptions: [{ topic, type: 'update', filters: '{"symbol":"BTCUSDT"}' }],
-        })
-      );
+    client = new RealTimeDataClient({
+      onConnect: (c) => {
+        result.connected = true;
+        c.subscribe({
+          subscriptions: [{ topic: 'crypto_prices_chainlink', type: 'update', filters: '{"symbol":"BTCUSDT"}' }],
+        });
+      },
+      onMessage: (_c, message) => {
+        result.messages.push(message);
+        if (result.messages.length >= 5) finish();
+      },
+      onStatusChange: (status) => {
+        if (String(status) === 'DISCONNECTED') result.disconnectedEvents++;
+      },
+      autoReconnect: false,
     });
-    ws.on('message', (data: RawData, isBinary: boolean) => {
-      const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
-      result.frames.push({
-        atMs: Date.now() - start,
-        isBinary,
-        byteLength: buf.length,
-        hex: buf.subarray(0, 64).toString('hex'),
-        text: buf.subarray(0, 200).toString('utf8'),
-      });
-      if (result.frames.length >= 5) finish();
-    });
-    ws.on('error', (err) => {
-      result.error = err instanceof Error ? err.message : String(err);
-    });
-    ws.on('close', (code, reason) => {
-      result.closedCode = code;
-      result.closedReason = reason.toString().slice(0, 200) || null;
-      finish();
-    });
+    client.connect();
   });
 }
 
 export const GET = handler(async () => {
-  const [chainlink, plain] = await Promise.all([
-    tryConnect('topic: crypto_prices_chainlink', 'crypto_prices_chainlink'),
-    tryConnect('topic: crypto_prices (plain)', 'crypto_prices'),
-  ]);
-  return ok({ chainlink, plain });
+  const result = await run();
+  return ok(result);
 });
