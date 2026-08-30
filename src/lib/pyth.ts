@@ -10,10 +10,14 @@ import { fetchJson } from './http';
  *
  * Confirmed against Pyth's own `pyth-crosschain` source on GitHub
  * (apps/hermes/server/src/api/rest/v2/latest_price_updates.rs and
- * apps/hermes/client/js/README.md): the endpoint, the BTC/USD price feed id,
- * and the response shape below are taken directly from it. `price` and `conf`
- * are serialized as strings there specifically to avoid precision loss
- * crossing the JS number boundary.
+ * apps/hermes/client/js/src/hermes-client.ts): the endpoint, the BTC/USD
+ * price feed id, and the response shape below are taken directly from it.
+ * `price` and `conf` are serialized as strings there specifically to avoid
+ * precision loss crossing the JS number boundary. The `ids[]` query param
+ * is built with `URLSearchParams`, not a raw string template — the official
+ * client does exactly that (`url.searchParams.append("ids[]", id)`), which
+ * percent-encodes the brackets; the server's query deserializer rejects the
+ * literal, unencoded form with "missing field `ids[]`".
  */
 
 export const BTC_USD_ID = '0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43';
@@ -28,7 +32,10 @@ export interface PythRead {
 }
 
 export async function pythLatest(hermesUrl: string): Promise<PythRead> {
-  const url = `${hermesUrl}/v2/updates/price/latest?ids[]=${BTC_USD_ID}&parsed=true`;
+  const params = new URLSearchParams();
+  params.append('ids[]', BTC_USD_ID);
+  params.set('parsed', 'true');
+  const url = `${hermesUrl}/v2/updates/price/latest?${params.toString()}`;
   const res = await fetchJson<HermesLatest>(url, { timeoutMs: 6000, retries: 1 });
 
   const p = res.parsed?.[0]?.price;

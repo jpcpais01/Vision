@@ -80,7 +80,10 @@ export class PythFeed {
     this.teardown();
 
     try {
-      const es = new EventSource(`${STREAM_URL}?ids[]=${BTC_USD_ID}&parsed=true`);
+      const params = new URLSearchParams();
+      params.append('ids[]', BTC_USD_ID);
+      params.set('parsed', 'true');
+      const es = new EventSource(`${STREAM_URL}?${params.toString()}`);
       this.es = es;
 
       es.onopen = () => {
