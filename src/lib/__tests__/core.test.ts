@@ -8,7 +8,7 @@ import { NormalSampler, Rng } from '../math/rng';
 import { fillGaps, returns, toBars, volatility } from '../bars';
 import { fill, quote } from '../book';
 import { discover } from '../market';
-import { coingeckoLatest } from '../coingecko';
+import { chainlink } from '../chainlink';
 import { DEFAULT_CONFIG, sanitize } from '../config';
 import type { Bar } from '../types';
 
@@ -183,38 +183,45 @@ test('a paper fill walks real depth and reports shortfalls honestly', () => {
   assert.equal(fill({ ...book, asks: [] }, 10).shares, 0);
 });
 
-// ── CoinGecko ────────────────────────────────────────────────────────────────
+// ── Chainlink on-chain fallback ─────────────────────────────────────────────
 
-test('CoinGecko reads decode simple/price, converting last_updated_at to ms', async () => {
+/** ABI-encodes a Chainlink latestRoundData() response: 5 left-padded 32-byte words. */
+function encodeLatestRoundData(answer: bigint, updatedAtSec: bigint): string {
+  const word = (n: bigint) => (n < 0n ? n + (1n << 256n) : n).toString(16).padStart(64, '0');
+  return '0x' + word(1n) + word(answer) + word(0n) + word(updatedAtSec) + word(1n);
+}
+
+test('the on-chain read decodes a signed 8-decimal answer and the updatedAt timestamp', async () => {
   const server = createServer((req, res) => {
-    const url = new URL(req.url ?? '', 'http://x');
-    assert.equal(url.pathname, '/simple/price');
-    assert.equal(url.searchParams.get('ids'), 'bitcoin');
-    assert.equal(url.searchParams.get('vs_currencies'), 'usd');
-    assert.equal(req.headers['x-cg-demo-api-key'], 'test-key');
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ bitcoin: { usd: 65_432.1, last_updated_at: 1_800_000_000 } }));
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      const parsed = JSON.parse(body) as { method: string };
+      assert.equal(parsed.method, 'eth_call');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ result: encodeLatestRoundData(6_543_210_000_000n, 1_800_000_000n) }));
+    });
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const { port } = server.address() as AddressInfo;
   try {
-    const read = await coingeckoLatest('test-key', `http://127.0.0.1:${port}`);
-    assert.equal(read.price, 65_432.1);
-    assert.equal(read.publishedAt, 1_800_000_000_000, 'last_updated_at is unix seconds, converted to ms');
+    const read = await chainlink(`http://127.0.0.1:${port}`, '0xfeed');
+    assert.ok(Math.abs(read.price - 65_432.1) < 1e-6, `got ${read.price}`);
+    assert.equal(read.updatedAt, 1_800_000_000_000, 'updatedAt is unix seconds, converted to ms');
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
 });
 
-test('a malformed CoinGecko response is rejected rather than producing a fake price', async () => {
+test('a short or malformed on-chain response is rejected rather than producing a fake price', async () => {
   const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({}));
+    res.end(JSON.stringify({ result: '0x00' }));
   });
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
   const { port } = server.address() as AddressInfo;
   try {
-    await assert.rejects(() => coingeckoLatest('', `http://127.0.0.1:${port}`));
+    await assert.rejects(() => chainlink(`http://127.0.0.1:${port}`, '0xfeed'));
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }

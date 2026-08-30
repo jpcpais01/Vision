@@ -5,10 +5,10 @@ import { fetchJson } from './http';
  *
  * The free on-chain Chainlink BTC/USD aggregator. This is NOT the Data Stream
  * Polymarket actually settles on — that needs commercial credentials — and it
- * updates far too slowly to drive a decision on its own (a 0.5% deviation or
- * an hourly heartbeat). But it is a genuine independent oracle read, so it is
- * the fallback whenever Polymarket's own live relay (`chainlinkFeed.ts`) has
- * nothing fresh at the exact instant a barrier or close needs capturing.
+ * updates far too slowly to be the primary source (a 0.5% deviation or an
+ * hourly heartbeat). But it is a genuine independent oracle read, so it is
+ * the engine's sole fallback whenever Polymarket's own live relay
+ * (`chainlinkFeed.ts`) has nothing fresh.
  */
 
 const LATEST_ROUND = '0xfeaf968c';

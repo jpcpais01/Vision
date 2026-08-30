@@ -34,14 +34,9 @@ export const env = {
   apiPassphrase: () => str('POLYMARKET_API_PASSPHRASE'),
   allowLive: () => bool('ALLOW_LIVE_TRADING', false),
 
-  // The engine's continuous display tape — Binance's live stream, CoinGecko
-  // as its fallback (see coingecko.ts). CoinGecko works without a key at a
-  // low rate limit; a free Demo key raises the headroom.
-  coingeckoApiKey: () => str('COINGECKO_API_KEY'),
-
-  // The free on-chain Chainlink aggregator — fallback behind Polymarket's own
-  // live relay (chainlinkFeed.ts), consulted only when capturing a barrier
-  // or a settlement close, never for the display tape.
+  // The free on-chain Chainlink aggregator — the engine's only fallback,
+  // behind Polymarket's own live relay (chainlinkFeed.ts). This is the sole
+  // price source anywhere in the app.
   chainlinkRpc: () => str('CHAINLINK_RPC_URL', 'https://ethereum-rpc.publicnode.com'),
   chainlinkFeed: () =>
     str('CHAINLINK_BTC_USD_FEED', '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c'),

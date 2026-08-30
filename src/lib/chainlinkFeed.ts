@@ -11,11 +11,11 @@ import type { Tick } from './types';
  * live feeds: a server round trip would just add latency to a value that is
  * only useful if it is current.
  *
- * Only ever consulted at the two instants that actually determine a window's
- * outcome — the barrier at open and the close at settlement (see
- * `Engine.captureExact`) — never used to drive the continuously-updating
- * display tape, which stays on Binance/CoinGecko. Getting those two numbers
- * exactly right matters far more than a smooth mid-window chart.
+ * This is the engine's sole live price source — every number anywhere in the
+ * app (the barrier, the running display, the volatility estimate, the
+ * close) comes from this feed, with the on-chain Chainlink aggregator
+ * (`chainlink.ts`) as its only fallback. No other exchange's data is ever
+ * blended in.
  *
  * Confirmed against Polymarket's own `real-time-data-client` source
  * (github.com/Polymarket/real-time-data-client): the endpoint, the

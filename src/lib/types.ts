@@ -99,13 +99,12 @@ export interface Trade {
 }
 
 /**
- * Where a captured price came from, most trustworthy (closest to what
- * Polymarket itself settles on) first. Always a genuine read — never
- * approximated. The first two are Polymarket's own settlement source
- * (Chainlink), consulted only for the barrier and the settlement close —
- * never for the continuous display tape, which is `binance`/`coingecko`.
+ * Where a captured price came from, most trustworthy (freshest) first.
+ * Always a genuine Chainlink read — the exact asset Polymarket itself
+ * settles these markets on, and the only source used anywhere in this app —
+ * never approximated from another exchange or index.
  */
-export type BarrierSource = 'chainlink-live' | 'chainlink-onchain' | 'binance' | 'coingecko';
+export type BarrierSource = 'chainlink-live' | 'chainlink-onchain';
 
 /** One completed 5-minute window, traded or not. */
 export interface WindowRecord {

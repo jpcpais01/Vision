@@ -58,18 +58,10 @@ export default function App() {
 
         <span
           className="flex items-center gap-1.5 text-xs text-[var(--muted)]"
-          title="Polymarket's own live Chainlink relay — the exact source it settles on. Used only for the barrier and the close."
+          title="Polymarket's own live Chainlink relay — the exact source it settles on, and the only price source anywhere in this app"
         >
           <span className={cx('h-1.5 w-1.5 rounded-full', s.chainlinkLive ? 'bg-[var(--up)]' : 'bg-[var(--line)]')} />
           Chainlink {s.chainlinkLive ? 'live' : 'offline'}
-        </span>
-
-        <span
-          className="flex items-center gap-1.5 text-xs text-[var(--muted)]"
-          title="Binance's live trade stream — the running display, not the barrier or close"
-        >
-          <span className={cx('h-1.5 w-1.5 rounded-full', s.binanceLive ? 'bg-[var(--up)]' : 'bg-[var(--line)]')} />
-          Binance {s.binanceLive ? 'live' : 'offline'}
         </span>
 
         <div className="ml-auto flex items-center gap-2">
@@ -148,14 +140,11 @@ export default function App() {
               <div className="num mt-1 text-xs text-[var(--muted)]">
                 needs to beat {usd(c.barrier)}
                 {c.barrierSource ? ` · ${barrierSourceLabel(c.barrierSource)}` : ''}
-                {c.barrierSource === 'binance' || c.barrierSource === 'coingecko'
-                  ? ' (fallback — not Polymarket’s exact source)'
-                  : ''}
               </div>
             ) : null}
             {s.price ? (
               <div className="num mt-1 text-xs text-[var(--muted)]">
-                display only: {s.priceSource ? barrierSourceLabel(s.priceSource) : ''}, updated{' '}
+                {s.priceSource ? barrierSourceLabel(s.priceSource) : ''}, updated{' '}
                 {Math.max(0, Math.round((Date.now() - s.priceAt) / 1000))}s ago
               </div>
             ) : null}
@@ -370,11 +359,10 @@ export default function App() {
       </section>
 
       <p className="px-1 text-center text-xs leading-relaxed text-[var(--muted)]">
-        The barrier and the close — the two numbers that decide win or loss — are read from
-        Polymarket’s own live Chainlink relay whenever it’s connected, the exact source these
-        markets settle on, falling back to the on-chain Chainlink read only when it isn’t. The
-        running display in between comes from Binance’s trade stream, CoinGecko filling in if that
-        drops — smooth, but never what a window is actually judged against. There is no
+        Every price on this screen — the barrier, the running display, the volatility estimate,
+        the close — comes from the same tape: Polymarket’s own live Chainlink relay, the exact
+        source these markets settle on, falling back to the on-chain Chainlink read only when the
+        relay has nothing fresh. No other exchange’s data is ever blended in anywhere. There is no
         forecasting model — only a driftless Monte Carlo over realised volatility. Paper mode
         simulates fills against the real order book. Not financial advice.
       </p>
@@ -423,16 +411,7 @@ function SideRead({
 }
 
 function barrierSourceLabel(s: BarrierSource): string {
-  switch (s) {
-    case 'chainlink-live':
-      return "Polymarket's live relay";
-    case 'chainlink-onchain':
-      return 'on-chain Chainlink';
-    case 'binance':
-      return "Binance's live stream";
-    default:
-      return 'CoinGecko';
-  }
+  return s === 'chainlink-live' ? "Polymarket's live relay" : 'on-chain Chainlink';
 }
 
 function phaseLabel(s: ReturnType<typeof useEngine>['snapshot']): string {

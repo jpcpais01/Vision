@@ -17,7 +17,6 @@ import { CALIBRATION_MIN_SEC, DEFAULT_CONFIG, HISTORY_MIN, WINDOW_SEC } from './
 import { bucket, trim, volatility } from './bars';
 import { quote } from './book';
 import { simulate } from './montecarlo';
-import { BinanceFeed } from './binanceFeed';
 import { ChainlinkFeed } from './chainlinkFeed';
 
 /**
@@ -27,6 +26,13 @@ import { ChainlinkFeed } from './chainlinkFeed';
  * Carlo over realised volatility (see montecarlo.ts). No forecast, no prior,
  * no external opinion feeds it.
  *
+ * There is also one price source: Chainlink, the exact asset Polymarket
+ * itself settles these markets on. Everything — the barrier, the running
+ * display, the volatility estimate, the close — comes from the same tape,
+ * built from Polymarket's own live relay of the Chainlink stream with the
+ * free on-chain Chainlink aggregator as its only fallback. No other
+ * exchange's price is ever blended in anywhere.
+ *
  *   1. On start, gather live ticks for at least `CALIBRATION_MIN_SEC` before
  *      doing anything else. There is no seeded history — the tape is built
  *      entirely from what has actually been observed since this instant — so
@@ -35,18 +41,13 @@ import { ChainlinkFeed } from './chainlinkFeed';
  *   2. Once calibrated, wait for a window that has not started yet, and join
  *      it at its open. Never mid-window — the barrier is the price at the
  *      open, and joining late means guessing it.
- *   3. At the open, the barrier is captured from the most direct source that
- *      answers — see `captureExact`. It is never derived or guessed, and it
- *      is specifically Polymarket's own settlement source (Chainlink) when
- *      at all reachable, not the faster display feed.
+ *   3. At the open, the barrier is whatever Chainlink price is already on
+ *      hand — see `begin`. It is never derived or guessed.
  *   4. Re-simulate roughly once a second for as long as the window is open,
- *      from the price right now (Binance/CoinGecko — smooth, but only ever
- *      used for the running display and the trading decision, never for the
- *      barrier or the close).
+ *      from the price right now.
  *   5. Buy whichever side — UP or DOWN — the simulation says is worth more
  *      than the market is charging for it, by more than the configured edge.
- *   6. At the close, capture the close the same exacting way as the barrier,
- *      then settle and record the window — traded or not.
+ *   6. At the close, settle and record the window — traded or not.
  */
 
 export type Phase =
@@ -84,9 +85,7 @@ export interface Snapshot {
   priceAt: number;
   /** Which source the current price actually came from. */
   priceSource: BarrierSource | null;
-  /** Whether Binance's live trade stream is currently connected. */
-  binanceLive: boolean;
-  /** Whether Polymarket's own live Chainlink relay is currently connected — the exact source it settles on. */
+  /** Whether Polymarket's own live Chainlink relay is currently connected. */
   chainlinkLive: boolean;
   ticks: Tick[];
   volPct: number | null;
@@ -116,10 +115,9 @@ export class Engine {
   private price: number | null = null;
   private priceAt = 0;
   private priceSource: BarrierSource | null = null;
-  private binanceLive = false;
   private chainlinkLive = false;
   /** Guards against overlapping polls if a request runs long. */
-  private coingeckoPolling = false;
+  private onchainPolling = false;
   private feedError: string | null = null;
   private vol = { sigma: 0, volPct: 0 };
 
@@ -133,7 +131,6 @@ export class Engine {
   private windows: WindowRecord[] = [];
   private logs: LogLine[] = [];
 
-  private readonly binanceFeed: BinanceFeed;
   private readonly chainlinkFeed: ChainlinkFeed;
   private timers: ReturnType<typeof setInterval>[] = [];
   private listeners = new Set<() => void>();
@@ -144,22 +141,11 @@ export class Engine {
   private pending = { trades: new Map<string, Trade>(), windows: new Map<string, WindowRecord>() };
 
   constructor(private headers: () => Record<string, string>) {
-    this.binanceFeed = new BinanceFeed({
-      onTick: (tick) => {
-        this.ingestTick(tick, 'binance');
-        this.emit();
-      },
-      onStatus: (connected) => {
-        this.binanceLive = connected;
-        if (connected) this.log('info', 'Connected to Binance’s live trade stream');
-        this.emit();
-      },
-    });
-    // Held ready but never fed into the display tape — only consulted
-    // reactively by captureExact() at the two instants that actually decide
-    // a window's outcome. See chainlinkFeed.ts for why.
     this.chainlinkFeed = new ChainlinkFeed({
-      onTick: () => this.emit(),
+      onTick: (tick) => {
+        this.ingestTick(tick, 'chainlink-live');
+        this.emit();
+      },
       onStatus: (connected) => {
         this.chainlinkLive = connected;
         if (connected) this.log('info', 'Connected to Polymarket’s live Chainlink relay');
@@ -189,17 +175,13 @@ export class Engine {
       `Started in ${config.mode} mode. Calibrating for ${CALIBRATION_MIN_SEC / 60} minutes before the first trade.`
     );
 
-    this.binanceFeed.start();
     this.chainlinkFeed.start();
-    await this.pollCoingecko(); // get a genuine price on the board immediately, don't wait on the stream to connect
+    await this.pollChainlinkOnchain(); // get a genuine price on the board immediately, don't wait on the relay to connect
 
     this.timers.push(setInterval(() => this.emit(), 1000)); // ticks the countdowns; prices also arrive via ingestTick
     this.timers.push(setInterval(() => void this.pollMarket(), 3000));
     this.timers.push(setInterval(() => this.step(), 250));
-    // The CoinGecko fallback: only actually used when Binance's live stream
-    // has nothing fresh, but still polled regularly so a stream drop doesn't
-    // leave the tape stuck. 2s keeps well clear of CoinGecko's free rate limit.
-    this.timers.push(setInterval(() => void this.pollCoingecko(), 2000));
+    this.timers.push(setInterval(() => void this.pollChainlinkOnchain(), 3000));
     this.timers.push(setInterval(() => void this.flush(), 5000));
     this.emit();
   }
@@ -207,7 +189,6 @@ export class Engine {
   stop(): void {
     if (!this.running) return;
     this.running = false;
-    this.binanceFeed.stop();
     this.chainlinkFeed.stop();
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
@@ -281,14 +262,13 @@ export class Engine {
     return {
       running: this.running,
       config: this.config,
-      // The live stream ticks continuously; the CoinGecko fallback is polled every 2s.
-      // 10s is a generous cushion before flapping to "offline".
-      connected: this.binanceLive || (this.price !== null && now - this.priceAt < 10_000),
+      // The live relay ticks whenever Chainlink publishes; the on-chain fallback
+      // only every 3s. 10s is a generous cushion before flapping to "offline".
+      connected: this.chainlinkLive || (this.price !== null && now - this.priceAt < 10_000),
       feedError: this.feedError,
       price: this.price,
       priceAt: this.priceAt,
       priceSource: this.priceSource,
-      binanceLive: this.binanceLive,
       chainlinkLive: this.chainlinkLive,
       ticks: this.ticks.slice(-400),
       volPct: this.vol.volPct || null,
@@ -310,10 +290,11 @@ export class Engine {
   // ── Price ─────────────────────────────────────────────────────────────────
 
   /**
-   * Fold one genuine price observation into the tape — the only way
-   * `this.price`, `this.ticks` and `this.bars` are ever updated. Every
-   * number on screen and every number the simulation trades on comes from
-   * one of two real sources (see `source`), never a guess.
+   * Fold one genuine Chainlink price observation into the tape — the only
+   * way `this.price`, `this.ticks` and `this.bars` are ever updated. There
+   * is no other exchange's data blended in anywhere: every number on screen
+   * and every number the simulation trades on is Chainlink, the same asset
+   * Polymarket itself settles these markets against.
    */
   private ingestTick(tick: Tick, source: BarrierSource): void {
     if (!(tick.p > 0)) return;
@@ -337,28 +318,29 @@ export class Engine {
   }
 
   /**
-   * Polled every 2s, market open or not — CoinGecko's cross-exchange index.
-   * Only actually folded into the tape when Binance's live stream doesn't
-   * have anything fresher: it is an equally genuine read, but letting it
-   * overwrite a live tick would make the tape worse, not better. Mainly
-   * exists so the app has a real price the instant it starts, and keeps
-   * working smoothly through any stream reconnect.
+   * The free on-chain Chainlink aggregator — the sole fallback behind
+   * Polymarket's own live relay. Skipped entirely (not even fetched) while
+   * the relay has a tick from the last 5s, so this only actually does
+   * anything during a relay outage. Its own answer only moves on a 0.5%
+   * deviation or an hourly heartbeat, so most fetches it does make are a
+   * genuine read that happens to match the last one.
    */
-  private async pollCoingecko(): Promise<void> {
-    if (!this.running || this.coingeckoPolling) return;
-    this.coingeckoPolling = true;
+  private async pollChainlinkOnchain(): Promise<void> {
+    if (!this.running || this.onchainPolling) return;
+    if (this.chainlinkFeed.latest()) return; // the relay is already fresh — nothing to do
+    this.onchainPolling = true;
     try {
-      const res = await fetch('/api/coingecko', { headers: this.headers(), cache: 'no-store' });
-      if (!res.ok) throw new Error(`coingecko ${res.status}`);
+      const res = await fetch('/api/chainlink', { headers: this.headers(), cache: 'no-store' });
+      if (!res.ok) throw new Error(`chainlink ${res.status}`);
       const d = (await res.json()) as { price?: number | null };
-      if (!d.price) throw new Error('no coingecko price');
-      if (!this.binanceFeed.latest()) this.ingestTick({ t: Date.now(), p: d.price }, 'coingecko');
+      if (!d.price) throw new Error('no chainlink price');
+      this.ingestTick({ t: Date.now(), p: d.price }, 'chainlink-onchain');
       this.emit();
     } catch (err) {
       if (this.price === null) this.feedError = msg(err);
       this.emit();
     } finally {
-      this.coingeckoPolling = false;
+      this.onchainPolling = false;
     }
   }
 
@@ -443,7 +425,7 @@ export class Engine {
     if (now >= open.endMs) {
       if (this.cycle.phase !== 'settling') {
         this.cycle = { ...this.cycle, phase: 'settling' };
-        void this.settle(open);
+        this.settle(open);
       }
       return;
     }
@@ -452,75 +434,24 @@ export class Engine {
   }
 
   /**
-   * The one number that has to be exactly right: whatever Polymarket itself
-   * would read at this instant. Chainlink Data Streams needs paid
-   * credentials to read directly, so this goes through the two free routes
-   * to the same feed, most direct first:
-   *
-   *   1. Polymarket's own live relay of the Chainlink stream — a tick from
-   *      the last 5s, checked synchronously, no fetch.
-   *   2. The free on-chain Chainlink aggregator, fetched fresh right now —
-   *      slower-moving, but a real independent read of the same asset.
-   *
-   * Returns null if neither answers; the caller decides what to do about
-   * that (fall back to the display feed, or sit the window out).
-   */
-  private async captureExact(): Promise<{ price: number; source: BarrierSource } | null> {
-    const live = this.chainlinkFeed.latest();
-    if (live) return { price: live.p, source: 'chainlink-live' };
-
-    try {
-      const res = await fetch('/api/chainlink', { headers: this.headers(), cache: 'no-store' });
-      if (res.ok) {
-        const d = (await res.json()) as { price?: number | null };
-        if (d.price) return { price: d.price, source: 'chainlink-onchain' };
-      }
-    } catch {
-      /* neither Chainlink source answered — the caller falls back */
-    }
-    return null;
-  }
-
-  /**
-   * The price to beat. Tries Polymarket's exact settlement source first
-   * (`captureExact`) — synchronously when the live relay has a fresh tick,
-   * so there is no delay in the case that matters most; only awaits the
-   * on-chain fallback when it doesn't. Only falls back to the display feed
-   * (Binance/CoinGecko) if neither genuine Chainlink source answers at all.
-   * If there is no price whatsoever, the window is sat out rather than
+   * The price to beat, captured synchronously — no fetch, no delay, right at
+   * the open. `this.price` is already the freshest genuine Chainlink read on
+   * hand (the live relay when connected, the on-chain fallback otherwise —
+   * see `ingestTick`/`pollChainlinkOnchain`), so there is nothing to await
+   * here. If there is no price at all yet, the window is sat out rather than
    * trading on a guess.
    */
   private begin(m: Market): void {
-    const live = this.chainlinkFeed.latest();
-    if (live) {
-      this.openAt(m, live.p, 'chainlink-live');
-      return;
-    }
-    // Claim the slot now — step() runs every 250ms and this.cycle.market
-    // must stop being null right away, or the await below would let a
-    // second tick re-enter and start the window twice.
-    this.cycle = { ...idleCycle('tracking'), market: m };
-    this.emit(true);
-    void this.openWindowFallback(m);
-  }
-
-  private openAt(m: Market, price: number, source: BarrierSource): void {
-    this.cycle = { ...idleCycle('tracking'), market: m, barrier: price, barrierSource: source };
-    this.log('info', `Window open. Barrier $${price.toFixed(2)} (${barrierSourceLabel(source)})`);
-    this.emit(true);
-  }
-
-  private async openWindowFallback(m: Market): Promise<void> {
-    const captured = await this.captureExact();
-    if (this.cycle.market?.id !== m.id) return; // rolled over while we waited
-
-    const price = captured?.price ?? this.price;
-    const source = captured?.source ?? this.priceSource;
-    this.cycle = { ...this.cycle, barrier: price, barrierSource: source };
+    this.cycle = {
+      ...idleCycle('tracking'),
+      market: m,
+      barrier: this.price,
+      barrierSource: this.priceSource,
+    };
     this.log(
-      price !== null ? 'info' : 'warn',
-      price !== null
-        ? `Window open. Barrier $${price.toFixed(2)} (${barrierSourceLabel(source)})`
+      this.price !== null ? 'info' : 'warn',
+      this.price !== null
+        ? `Window open. Barrier $${this.price.toFixed(2)} (${barrierSourceLabel(this.priceSource)})`
         : 'Window opened with no genuine price available — sitting this one out'
     );
     this.emit(true);
@@ -674,45 +605,12 @@ export class Engine {
 
   // ── Settlement ────────────────────────────────────────────────────────────
 
-  /**
-   * Hands off to the next window immediately — this must never wait on a
-   * price capture; windows are back-to-back and the next one needs to open
-   * the instant this one closes, no matter how long capturing this window's
-   * exact close takes. The closing window's own cycle state (barrier, sim,
-   * skip reason) is snapshotted into `c` before that handoff, since
-   * `this.cycle` itself is about to start representing the *next* window —
-   * `finishSettlement` reads only the snapshot, never `this.cycle`.
-   */
   private settle(m: Market): void {
     const c = this.cycle;
-
-    this.market = this.nextMarket;
-    this.nextMarket = null;
-    if (this.market) {
-      const wait = Math.max(0, (this.market.startMs - Date.now()) / 1000);
-      this.log(
-        'info',
-        `Next window opens in ${wait.toFixed(0)}s — waiting for it to start ` +
-          `(${this.market.slug || this.market.question || this.market.id})`
-      );
-    }
-    this.cycle = idleCycle('waiting-for-window');
-    this.emit(true);
-
-    void this.finishSettlement(m, c);
-  }
-
-  /**
-   * Captures the exact close the same exacting way as the barrier
-   * (`captureExact`), then records win/loss and the window's history. Runs
-   * after the handoff above, never blocking it.
-   */
-  private async finishSettlement(m: Market, c: Cycle): Promise<void> {
-    const captured = await this.captureExact();
-    const close = captured?.price ?? this.price;
-    const closeSource = captured?.source ?? this.priceSource;
+    const close = this.price;
+    const closeSource = this.priceSource;
     if (c.barrier === null || close === null) {
-      this.log('warn', 'Window closed with no genuine price available — could not record it');
+      this.cycle = { ...this.cycle, phase: 'settling' };
       return;
     }
 
@@ -763,6 +661,22 @@ export class Engine {
     if (!this.windows.some((w) => w.id === record.id)) {
       this.windows = [...this.windows, record].slice(-300);
       this.pending.windows.set(record.id, record);
+    }
+
+    this.cycle = idleCycle('waiting-for-window');
+    // Hand off directly to the window already pre-fetched by pollMarket —
+    // windows are back-to-back, so this is normally ready to open right now,
+    // with no rediscovery gap. Only falls back to null (a fresh poll within
+    // 3s) if discovery genuinely hasn't caught up.
+    this.market = this.nextMarket;
+    this.nextMarket = null;
+    if (this.market) {
+      const wait = Math.max(0, (this.market.startMs - Date.now()) / 1000);
+      this.log(
+        'info',
+        `Next window opens in ${wait.toFixed(0)}s — waiting for it to start ` +
+          `(${this.market.slug || this.market.question || this.market.id})`
+      );
     }
     this.emit(true);
   }
@@ -852,16 +766,7 @@ function idleCycle(phase: Phase): Cycle {
 }
 
 function barrierSourceLabel(s: BarrierSource | null): string {
-  switch (s) {
-    case 'chainlink-live':
-      return "Polymarket's live Chainlink relay";
-    case 'chainlink-onchain':
-      return 'on-chain Chainlink';
-    case 'binance':
-      return "Binance's live stream";
-    default:
-      return 'CoinGecko';
-  }
+  return s === 'chainlink-live' ? "Polymarket's live Chainlink relay" : 'on-chain Chainlink';
 }
 
 function msg(e: unknown): string {
