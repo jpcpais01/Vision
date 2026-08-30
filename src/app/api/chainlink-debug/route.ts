@@ -5,21 +5,21 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
- * A one-shot diagnostic, not part of the trading engine's own path. The
- * browser client (`chainlinkFeed.ts`) connects, sends a subscribe message
- * that matches Polymarket's own documented protocol exactly, and gets
- * total silence back — no error, no data. The leading hypothesis is that
- * the server checks the WebSocket handshake's `Origin` header and only
- * actually activates the subscription for `https://polymarket.com` itself;
- * a browser can never override that header, but a server-side connection
- * can set anything. This tries both, side by side, to find out.
+ * A one-shot diagnostic, not part of the trading engine's own path.
+ *
+ * Round 1 tested whether the server gates on the WebSocket handshake's
+ * `Origin` header — it doesn't: both a spoofed `https://polymarket.com`
+ * origin and no override at all connected, subscribed, and then received
+ * zero messages. Origin is not the variable.
+ *
+ * Round 2: is it specifically the `crypto_prices_chainlink` topic that's
+ * gated — Polymarket's own exact settlement source, plausibly held back
+ * from public broadcast even though the plainer `crypto_prices` topic
+ * (documented right alongside it) might be open. Subscribes to both, side
+ * by side, to find out whether the WebSocket mechanism works at all here.
  */
 
 const URL = 'wss://ws-live-data.polymarket.com';
-const SUBSCRIBE = JSON.stringify({
-  action: 'subscribe',
-  subscriptions: [{ topic: 'crypto_prices_chainlink', type: 'update', filters: '{"symbol":"BTCUSDT"}' }],
-});
 const TIMEOUT_MS = 7000;
 
 interface Attempt {
@@ -31,7 +31,7 @@ interface Attempt {
   closedReason: string | null;
 }
 
-function tryConnect(label: string, headers?: Record<string, string>): Promise<Attempt> {
+function tryConnect(label: string, topic: string): Promise<Attempt> {
   return new Promise((resolve) => {
     const result: Attempt = {
       label,
@@ -42,7 +42,7 @@ function tryConnect(label: string, headers?: Record<string, string>): Promise<At
       closedReason: null,
     };
     let done = false;
-    const ws = new WebSocket(URL, headers ? { headers } : undefined);
+    const ws = new WebSocket(URL);
 
     const finish = () => {
       if (done) return;
@@ -59,7 +59,12 @@ function tryConnect(label: string, headers?: Record<string, string>): Promise<At
 
     ws.on('open', () => {
       result.opened = true;
-      ws.send(SUBSCRIBE);
+      ws.send(
+        JSON.stringify({
+          action: 'subscribe',
+          subscriptions: [{ topic, type: 'update', filters: '{"symbol":"BTCUSDT"}' }],
+        })
+      );
     });
     ws.on('message', (data) => {
       result.messages.push(String(data).slice(0, 200));
@@ -77,9 +82,9 @@ function tryConnect(label: string, headers?: Record<string, string>): Promise<At
 }
 
 export const GET = handler(async () => {
-  const [withOrigin, withoutOrigin] = await Promise.all([
-    tryConnect('server-side, Origin: https://polymarket.com', { Origin: 'https://polymarket.com' }),
-    tryConnect('server-side, no Origin override'),
+  const [chainlink, plain] = await Promise.all([
+    tryConnect('topic: crypto_prices_chainlink', 'crypto_prices_chainlink'),
+    tryConnect('topic: crypto_prices (plain)', 'crypto_prices'),
   ]);
-  return ok({ withOrigin, withoutOrigin });
+  return ok({ chainlink, plain });
 });
