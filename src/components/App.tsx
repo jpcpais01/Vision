@@ -6,6 +6,7 @@ import { WINDOW_SEC } from '@/lib/config';
 import { PriceChart, ProbChart } from '@/components/Charts';
 import { Settings } from '@/components/Settings';
 import { clock, cx, pct, pts, signed, time, usd } from '@/lib/format';
+import type { Quote, Side } from '@/lib/types';
 
 export default function App() {
   const v = useEngine();
@@ -129,6 +130,13 @@ export default function App() {
                 width: `${Math.min(100, Math.max(0, ((WINDOW_SEC - (s.secondsLeft ?? 0)) / WINDOW_SEC) * 100))}%`,
               }}
             />
+          </div>
+        ) : null}
+
+        {s.running ? (
+          <div className="mt-4 flex items-center gap-6 border-t border-[var(--line)] pt-4">
+            <OrderBookSide side="UP" quote={s.quotes.up} />
+            <OrderBookSide side="DOWN" quote={s.quotes.down} />
           </div>
         ) : null}
 
@@ -328,8 +336,8 @@ export default function App() {
       </section>
 
       <p className="px-1 text-center text-xs leading-relaxed text-[var(--muted)]">
-        Prices from Binance, anchored to Chainlink's on-chain oracle at the open of each
-        window. Paper mode simulates fills against the real order book. Not financial advice.
+        Prices from Binance, continuously anchored to Chainlink's on-chain oracle. Paper
+        mode simulates fills against the real order book. Not financial advice.
       </p>
 
       {showSettings ? (
@@ -438,6 +446,30 @@ function Figure({
         {value}
       </div>
       {hint ? <div className="mt-0.5 truncate text-[11px] text-[var(--muted)]">{hint}</div> : null}
+    </div>
+  );
+}
+
+/** The current buy price for one side of the market — what a share costs right now. */
+function OrderBookSide({ side, quote }: { side: Side; quote: Quote }) {
+  const up = side === 'UP';
+  const color = up ? 'text-[var(--up)]' : 'text-[var(--down)]';
+  return (
+    <div className="flex items-baseline gap-2">
+      <span className={cx('text-xs font-semibold', color)}>{side}</span>
+      {quote.ask !== null ? (
+        <>
+          <span className="num text-lg font-semibold leading-none">
+            {(quote.ask * 100).toFixed(0)}¢
+          </span>
+          <span className="text-[11px] text-[var(--muted)]">
+            to buy
+            {quote.bid !== null ? ` · ${(quote.bid * 100).toFixed(0)}¢ bid` : ''}
+          </span>
+        </>
+      ) : (
+        <span className="text-xs text-[var(--muted)]">no offers</span>
+      )}
     </div>
   );
 }

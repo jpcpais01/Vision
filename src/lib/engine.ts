@@ -282,13 +282,22 @@ export class Engine {
     }
   }
 
+  /**
+   * Runs every 30 seconds, market open or not. Every fetch also feeds the
+   * anchor (`applyChainlinkAnchor`) — so the Binance-derived price is
+   * re-levelled to Chainlink for as long as the window is open, not only at
+   * its first instant. Most of these polls are a no-op: the on-chain answer
+   * itself only moves on a 0.5% deviation or an hourly heartbeat, so there is
+   * usually nothing new to apply. When it does move, this is what catches it.
+   */
   private async pollChainlink(): Promise<void> {
     if (!this.running) return;
     try {
       const res = await fetch('/api/chainlink', { headers: this.headers(), cache: 'no-store' });
       if (!res.ok) return;
-      const d = (await res.json()) as { price?: number };
+      const d = (await res.json()) as { price?: number | null };
       this.chainlinkGap = d.price && this.price ? this.price - d.price : null;
+      if (d.price) this.applyChainlinkAnchor(d.price);
       this.emit();
     } catch {
       /* advisory only */
@@ -387,14 +396,11 @@ export class Engine {
   }
 
   /**
-   * Anchor Binance to the settlement oracle at the open of each window.
+   * Anchor Binance to the settlement oracle before capturing a barrier.
    *
-   * Binance is one exchange's tape; Chainlink's on-chain answer, though far too
-   * slow to trade from directly, is a genuine independent read of the same
-   * asset. Reading it once here and adding the difference to every Binance
-   * price — past and future, for the rest of this window — keeps the level we
-   * trade on close to what Polymarket actually settles against, while all the
-   * second-to-second movement still comes from Binance's real tape.
+   * A guaranteed-fresh read: the barrier must not be captured on a stale
+   * anchor, so this fetches Chainlink directly rather than waiting for the
+   * next `pollChainlink` tick (which can be up to 30s away).
    */
   private async computeOffset(): Promise<void> {
     if (this.rawPrice === null) return;
@@ -402,27 +408,41 @@ export class Engine {
       const res = await fetch('/api/chainlink', { headers: this.headers(), cache: 'no-store' });
       if (!res.ok) return;
       const d = (await res.json()) as { price?: number | null };
-      if (!d.price) return;
-
-      const nextOffset = d.price - this.rawPrice;
-      const delta = nextOffset - this.offset;
-      if (Math.abs(delta) < 0.005) return; // not worth re-levelling for a cent
-
-      this.offset = nextOffset;
-      // Re-level everything already on the tape so the history sent to the
-      // model, the chart, and the barrier about to be captured all sit on the
-      // same basis rather than mixing two different offsets.
-      if (this.price !== null) this.price += delta;
-      this.bars = shiftBars(this.bars, delta);
-      this.ticks = shiftTicks(this.ticks, delta);
-      this.log(
-        'info',
-        `Anchored to Chainlink: ${delta >= 0 ? '+' : '-'}$${Math.abs(delta).toFixed(2)} ` +
-          `(Chainlink $${d.price.toFixed(2)} vs Binance $${this.rawPrice.toFixed(2)})`
-      );
+      if (d.price) this.applyChainlinkAnchor(d.price);
     } catch {
       // Best-effort. Trade on raw Binance if Chainlink is unreachable.
     }
+  }
+
+  /**
+   * Re-level Binance to a Chainlink read.
+   *
+   * Binance is one exchange's tape; Chainlink's on-chain answer, though far too
+   * slow to trade from on its own, is a genuine independent read of the same
+   * asset. Whenever a fresh one arrives — at a window's open, and every 30s
+   * afterward via `pollChainlink` — the difference against the current raw
+   * Binance price is added to every Binance number: past (the bars and ticks
+   * already on the tape) and future (every price from here on, via `offset`).
+   * The level we trade on stays close to what Polymarket actually settles
+   * against for as long as the window runs; the second-to-second movement is
+   * still Binance's real tape, which is the only part of this that updates
+   * fast enough to be worth polling every second.
+   */
+  private applyChainlinkAnchor(chainlinkPrice: number): void {
+    if (this.rawPrice === null) return;
+    const nextOffset = chainlinkPrice - this.rawPrice;
+    const delta = nextOffset - this.offset;
+    if (Math.abs(delta) < 0.005) return; // the on-chain answer has not moved
+
+    this.offset = nextOffset;
+    if (this.price !== null) this.price += delta;
+    this.bars = shiftBars(this.bars, delta);
+    this.ticks = shiftTicks(this.ticks, delta);
+    this.log(
+      'info',
+      `Anchored to Chainlink: ${delta >= 0 ? '+' : '-'}$${Math.abs(delta).toFixed(2)} ` +
+        `(Chainlink $${chainlinkPrice.toFixed(2)} vs Binance $${this.rawPrice.toFixed(2)})`
+    );
   }
 
   /** Ask once, at the open. Nothing waits on it. */

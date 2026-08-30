@@ -84,13 +84,14 @@ hourly heartbeat, so it cannot produce a 10-second series at all.
 
 So live prices and history come from **Binance**, which is free, needs no key,
 and actually publishes 1-second resolution. It is one exchange's tape rather
-than an oracle aggregate, so at the open of every window the app reads the free
-on-chain Chainlink price once and adds the difference to every Binance price —
-past and future — for the rest of that window. The result: the level is
-anchored to the same oracle Polymarket settles against, while the
-second-to-second movement is Binance's real tape. The offset is logged in
-Activity each time it's recomputed, and the live gap between the two feeds is
-still shown continuously.
+than an oracle aggregate, so the app continuously anchors it to the free
+on-chain Chainlink price: every 30 seconds, and immediately at the open of each
+window before the barrier is captured, it reads Chainlink and adds the
+difference to every Binance price — past and future — until the next read
+moves it again. The result: the level tracks the same oracle Polymarket
+settles against as closely as its slow update cadence (a 0.5% deviation or an
+hourly heartbeat) allows, while the second-to-second movement is still
+Binance's real tape. Each re-anchor is logged in Activity.
 
 If you get Chainlink Data Streams credentials, swapping the source is one file
 (`src/lib/binance.ts`).
