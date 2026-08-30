@@ -8,12 +8,19 @@ export const dynamic = 'force-dynamic';
 
 export const GET = handler(async () => {
   const store = getStore();
+  // Probe rather than infer: configured is not the same as reachable, and a
+  // store that reports "upstash" while every write throws is worse than one
+  // that admits it is in memory.
+  const storageProbe = await store.ping();
   return ok({
     status: 'ok',
     time: Date.now(),
     capabilities: capabilities(),
     liveBlockers: liveTradingBlockers(),
     storage: store.kind,
+    storageOk: storageProbe.ok,
+    storageLatencyMs: storageProbe.latencyMs,
+    storageError: storageProbe.error ?? null,
     endpoints: {
       clob: env.clobUrl(),
       gamma: env.gammaUrl(),

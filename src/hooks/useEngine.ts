@@ -17,6 +17,9 @@ export interface HealthInfo {
   };
   liveBlockers: string[];
   storage: string;
+  storageOk: boolean;
+  storageLatencyMs: number;
+  storageError: string | null;
   endpoints: Record<string, unknown>;
 }
 

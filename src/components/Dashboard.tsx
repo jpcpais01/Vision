@@ -135,9 +135,20 @@ export default function Dashboard() {
               barrier estimated
             </Badge>
           ) : null}
-          {health?.storage === 'memory' ? (
+          {health && health.storage === 'upstash' && !health.storageOk ? (
+            <Badge
+              tone="down"
+              title={`Upstash is configured but unreachable: ${health.storageError ?? 'unknown error'}`}
+            >
+              storage unreachable
+            </Badge>
+          ) : health?.storage === 'memory' ? (
             <Badge tone="muted" title="Set UPSTASH_REDIS_REST_URL and _TOKEN for durable history across cold starts">
               in-memory storage
+            </Badge>
+          ) : health?.storage === 'upstash' ? (
+            <Badge tone="up" title={`Upstash reachable in ${health.storageLatencyMs}ms`}>
+              durable storage
             </Badge>
           ) : null}
         </div>
@@ -405,7 +416,9 @@ function IntroBanner({
         {!hasLlm ? (
           <Badge tone="warn">OPENROUTER_API_KEY missing — forecasts will fail</Badge>
         ) : null}
-        {storage === 'memory' ? <Badge tone="muted">memory storage</Badge> : null}
+        {storage === 'memory' ? (
+          <Badge tone="muted">memory storage — history is lost on cold start</Badge>
+        ) : null}
         <button type="button" className="btn btn-primary px-4 py-2" onClick={onStart}>
           Start engine
         </button>

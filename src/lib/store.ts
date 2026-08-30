@@ -24,6 +24,8 @@ const MAX_LOGS = 1000;
 
 export interface Store {
   readonly kind: 'memory' | 'upstash';
+  /** Round-trip probe. Reports whether the backend is actually reachable. */
+  ping(): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
   getConfig(): Promise<TradingConfig>;
   setConfig(config: TradingConfig): Promise<void>;
   getKillSwitch(): Promise<boolean>;
@@ -74,6 +76,10 @@ function memoryState(): MemoryState {
 
 class MemoryStore implements Store {
   readonly kind = 'memory' as const;
+
+  async ping() {
+    return { ok: true, latencyMs: 0 };
+  }
 
   async getConfig() {
     return { ...memoryState().config };
@@ -143,6 +149,20 @@ class UpstashStore implements Store {
     const json = (await res.json()) as { result: T; error?: string };
     if (json.error) throw new Error(`upstash: ${json.error}`);
     return json.result;
+  }
+
+  async ping() {
+    const started = Date.now();
+    try {
+      await this.command<string>(['PING']);
+      return { ok: true, latencyMs: Date.now() - started };
+    } catch (err) {
+      return {
+        ok: false,
+        latencyMs: Date.now() - started,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   private async getJson<T>(key: string, fallback: T): Promise<T> {

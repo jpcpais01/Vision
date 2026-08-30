@@ -95,6 +95,54 @@ npm run build
 
 See `.env.example` for the annotated full list.
 
+### Setting up durable storage (Upstash Redis)
+
+Without this, trades and window history live in process memory and are wiped on
+every serverless cold start — which is exactly the data a paper test exists to
+produce. The free tier is more than enough: the app writes a couple of small
+records per 5-minute window.
+
+1. Create a database at [console.upstash.com](https://console.upstash.com) →
+   **Create Database**. Pick the region closest to your Vercel deployment region
+   (every write is a round trip); type **Regional** is fine.
+2. On the database page open the **REST API** tab and copy the two values
+   labelled `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`. Use the
+   **REST** credentials, not the `redis://` connection string — this app speaks
+   Upstash's HTTP API so it works from any runtime with no connection pooling.
+3. Set both, locally in `.env.local` and in **Vercel → Settings → Environment
+   Variables**:
+
+   ```bash
+   UPSTASH_REDIS_REST_URL=https://your-db-12345.upstash.io
+   UPSTASH_REDIS_REST_TOKEN=AX...
+   ```
+
+4. Restart (Vercel: redeploy — env changes are not picked up by a running
+   deployment) and confirm it took:
+
+   ```bash
+   curl -s https://your-app.vercel.app/api/health | jq '{storage, storageOk, storageLatencyMs, storageError}'
+   # { "storage": "upstash", "storageOk": true, "storageLatencyMs": 34, "storageError": null }
+   ```
+
+   The dashboard shows the same thing as a badge beside the tab bar: **durable
+   storage** (green) when the round trip succeeds, **storage unreachable** (red)
+   with the error on hover when the credentials are configured but wrong, and
+   **in-memory storage** (grey) when they are absent. Configured is not the same
+   as reachable, so the health check actually issues a `PING` rather than
+   inferring from the presence of the variables.
+
+Alternatively, if you deploy on Vercel you can add the Upstash integration from
+the **Storage** tab of your project — it injects both variables for you and no
+manual copying is needed.
+
+**What gets stored.** Five keys under a `vision:` prefix: `config`,
+`killswitch`, and hashes of `trades`, `cycles` and `logs`. Trades and cycles are
+keyed by id so a re-post of an updated record (`PENDING` → `OPEN` → `WON`)
+overwrites rather than duplicating, which is what makes the persistence retryable
+after a dropped connection. History is capped at 2,000 trades, 2,000 windows and
+1,000 log lines. **Reset records** in the Performance tab clears them.
+
 ---
 
 ## Enabling LIVE mode

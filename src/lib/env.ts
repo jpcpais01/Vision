@@ -46,7 +46,7 @@ export const env = {
     str('CHAINLINK_BTC_USD_FEED', '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c'),
 
   // Storage
-  upstashUrl: () => str('UPSTASH_REDIS_REST_URL'),
+  upstashUrl: () => str('UPSTASH_REDIS_REST_URL').replace(/\/+$/, ''),
   upstashToken: () => str('UPSTASH_REDIS_REST_TOKEN'),
 };
 
