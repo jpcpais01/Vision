@@ -328,8 +328,8 @@ export default function App() {
       </section>
 
       <p className="px-1 text-center text-xs leading-relaxed text-[var(--muted)]">
-        Prices from the Pyth oracle. Polymarket settles on Chainlink, so the two can differ
-        slightly. Paper mode simulates fills against the real order book. Not financial advice.
+        Prices from Binance, anchored to Chainlink's on-chain oracle at the open of each
+        window. Paper mode simulates fills against the real order book. Not financial advice.
       </p>
 
       {showSettings ? (

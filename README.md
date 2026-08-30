@@ -82,14 +82,18 @@ does not offer that stream without commercial credentials, and its free on-chain
 feed is a different, much slower product — it moves on a 0.5% deviation or an
 hourly heartbeat, so it cannot produce a 10-second series at all.
 
-So the app uses **Pyth**, which is free, needs no key, and is built the same way:
-an aggregate of major exchange prices rather than one venue's tape. It is not the
-settlement feed and will not match it to the cent. The free Chainlink feed is
-still read every 30 seconds purely to show the gap between the two, so a
-divergence is visible rather than silent.
+So live prices and history come from **Binance**, which is free, needs no key,
+and actually publishes 1-second resolution. It is one exchange's tape rather
+than an oracle aggregate, so at the open of every window the app reads the free
+on-chain Chainlink price once and adds the difference to every Binance price —
+past and future — for the rest of that window. The result: the level is
+anchored to the same oracle Polymarket settles against, while the
+second-to-second movement is Binance's real tape. The offset is logged in
+Activity each time it's recomputed, and the live gap between the two feeds is
+still shown continuously.
 
 If you get Chainlink Data Streams credentials, swapping the source is one file
-(`src/lib/pyth.ts`).
+(`src/lib/binance.ts`).
 
 ## Live mode
 
@@ -123,7 +127,8 @@ Six things, all on sliders:
 
 ```
 src/lib/
-  pyth.ts        price feed (+ the Chainlink cross-check)
+  binance.ts     live price + history
+  chainlink.ts   the on-chain cross-check, and the per-window anchor
   market.ts      finding the live 5-minute market
   book.ts        order book maths, and the paper fill model
   clob.ts        Polymarket reads

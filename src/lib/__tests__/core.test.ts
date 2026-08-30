@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { simulate } from '../montecarlo';
 import { normCdf, normInv } from '../math/normal';
 import { NormalSampler, Rng } from '../math/rng';
-import { fillGaps, returns, toBars, volatility } from '../bars';
+import { fillGaps, returns, shiftBars, shiftTicks, toBars, volatility } from '../bars';
 import { fill, quote } from '../book';
 import { parse, forecast, buildPrompt } from '../llm';
 import { DEFAULT_CONFIG, sanitize } from '../config';
@@ -148,6 +148,40 @@ test('volatility recovers a known sigma and is not fooled by a flat series', () 
 
   const empty = volatility([]);
   assert.ok(empty.sigma > 0, 'never zero — that would make every edge look infinite');
+});
+
+// ── Chainlink anchor offset ─────────────────────────────────────────────────
+
+test('shifting re-levels every close by the same amount', () => {
+  const bars: Bar[] = [
+    { t: 0, c: 100_000 },
+    { t: 10_000, c: 100_050 },
+    { t: 20_000, c: 99_980 },
+  ];
+  const shifted = shiftBars(bars, 25);
+  assert.deepEqual(
+    shifted.map((b) => b.c),
+    [100_025, 100_075, 100_005]
+  );
+  // Shape is preserved — only the level moves.
+  assert.equal(shifted[1].c - shifted[0].c, bars[1].c - bars[0].c);
+  assert.equal(shifted[0].t, bars[0].t, 'timestamps are untouched');
+});
+
+test('a zero delta returns the same array rather than a needless copy', () => {
+  const bars: Bar[] = [{ t: 0, c: 100_000 }];
+  assert.equal(shiftBars(bars, 0), bars);
+  const ticks = [{ t: 0, p: 100_000 }];
+  assert.equal(shiftTicks(ticks, 0), ticks);
+});
+
+test('shifting ticks matches shifting bars', () => {
+  const ticks = [
+    { t: 0, p: 99_900 },
+    { t: 1000, p: 99_950 },
+  ];
+  const shifted = shiftTicks(ticks, -40);
+  assert.deepEqual(shifted.map((t) => t.p), [99_860, 99_910]);
 });
 
 // ── Book ────────────────────────────────────────────────────────────────────

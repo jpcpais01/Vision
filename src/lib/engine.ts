@@ -14,7 +14,7 @@ import type {
   WindowRecord,
 } from './types';
 import { DEFAULT_CONFIG, HISTORY_MIN, WINDOW_SEC } from './config';
-import { bucket, fillGaps, merge, toBars, trim, volatility } from './bars';
+import { bucket, fillGaps, merge, shiftBars, shiftTicks, toBars, trim, volatility } from './bars';
 import { quote } from './book';
 import { simulate } from './montecarlo';
 
@@ -95,6 +95,10 @@ export class Engine {
   private ticks: Tick[] = [];
   private bars: Bar[] = [];
   private price: number | null = null;
+  /** Last raw Binance read, before the Chainlink anchor offset is applied. */
+  private rawPrice: number | null = null;
+  /** Added to every Binance price. Recomputed at the open of each window. */
+  private offset = 0;
   private priceAt = 0;
   private chainlinkGap: number | null = null;
   private feedError: string | null = null;
@@ -256,17 +260,19 @@ export class Engine {
       const tick = (await res.json()) as Tick;
       if (!(tick.p > 0)) throw new Error('bad price');
 
-      this.price = tick.p;
+      this.rawPrice = tick.p;
+      const p = tick.p + this.offset;
+      this.price = p;
       this.priceAt = Date.now();
       this.feedError = null;
-      this.ticks.push({ t: this.priceAt, p: tick.p });
+      this.ticks.push({ t: this.priceAt, p });
       if (this.ticks.length > MAX_TICKS) this.ticks = this.ticks.slice(-MAX_TICKS);
 
       // Fold into the current 10-second bar.
       const b = bucket(this.priceAt);
       const last = this.bars[this.bars.length - 1];
-      if (last && last.t === b) last.c = tick.p;
-      else if (!last || b > last.t) this.bars.push({ t: b, c: tick.p });
+      if (last && last.t === b) last.c = p;
+      else if (!last || b > last.t) this.bars.push({ t: b, c: p });
 
       if (this.bars.length % 6 === 0) this.vol = volatility(this.bars);
       this.emit();
@@ -357,21 +363,66 @@ export class Engine {
   }
 
   private begin(m: Market): void {
-    const barrier = this.price;
-    if (barrier === null) {
+    if (this.price === null) {
       this.log('warn', 'Window opened with no price — sitting this one out');
       return;
     }
+    // Claim the slot synchronously: step() runs every 250ms and this.cycle
+    // .market must stop being null right away, or the Chainlink fetch below
+    // would let a second tick re-enter and start the window twice.
+    this.cycle = { ...idleCycle(), market: m, phase: 'forecasting' };
+    this.emit(true);
+    void this.openWindow(m);
+  }
 
-    this.cycle = {
-      ...idleCycle(),
-      market: m,
-      phase: 'forecasting',
-      barrier,
-    };
+  private async openWindow(m: Market): Promise<void> {
+    await this.computeOffset();
+    if (this.cycle.market?.id !== m.id || this.price === null) return;
+
+    const barrier = this.price;
+    this.cycle = { ...this.cycle, barrier };
     this.log('info', `Window open. Barrier $${barrier.toFixed(2)}`);
     this.emit(true);
     void this.askModel(m, barrier);
+  }
+
+  /**
+   * Anchor Binance to the settlement oracle at the open of each window.
+   *
+   * Binance is one exchange's tape; Chainlink's on-chain answer, though far too
+   * slow to trade from directly, is a genuine independent read of the same
+   * asset. Reading it once here and adding the difference to every Binance
+   * price — past and future, for the rest of this window — keeps the level we
+   * trade on close to what Polymarket actually settles against, while all the
+   * second-to-second movement still comes from Binance's real tape.
+   */
+  private async computeOffset(): Promise<void> {
+    if (this.rawPrice === null) return;
+    try {
+      const res = await fetch('/api/chainlink', { headers: this.headers(), cache: 'no-store' });
+      if (!res.ok) return;
+      const d = (await res.json()) as { price?: number | null };
+      if (!d.price) return;
+
+      const nextOffset = d.price - this.rawPrice;
+      const delta = nextOffset - this.offset;
+      if (Math.abs(delta) < 0.005) return; // not worth re-levelling for a cent
+
+      this.offset = nextOffset;
+      // Re-level everything already on the tape so the history sent to the
+      // model, the chart, and the barrier about to be captured all sit on the
+      // same basis rather than mixing two different offsets.
+      if (this.price !== null) this.price += delta;
+      this.bars = shiftBars(this.bars, delta);
+      this.ticks = shiftTicks(this.ticks, delta);
+      this.log(
+        'info',
+        `Anchored to Chainlink: ${delta >= 0 ? '+' : '-'}$${Math.abs(delta).toFixed(2)} ` +
+          `(Chainlink $${d.price.toFixed(2)} vs Binance $${this.rawPrice.toFixed(2)})`
+      );
+    } catch {
+      // Best-effort. Trade on raw Binance if Chainlink is unreachable.
+    }
   }
 
   /** Ask once, at the open. Nothing waits on it. */

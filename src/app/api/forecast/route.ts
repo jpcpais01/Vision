@@ -1,7 +1,7 @@
 import { env } from '@/lib/env';
 import { errorMessage, fail, handler, ok } from '@/lib/api';
 import { forecast } from '@/lib/llm';
-import { history } from '@/lib/pyth';
+import { history } from '@/lib/binance';
 import { HISTORY_MIN } from '@/lib/config';
 import type { Bar } from '@/lib/types';
 

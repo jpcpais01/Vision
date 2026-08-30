@@ -1,14 +1,14 @@
 import { env } from '@/lib/env';
 import { errorMessage, handler, ok } from '@/lib/api';
-import { chainlink } from '@/lib/pyth';
+import { chainlink } from '@/lib/chainlink';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
- * The free on-chain Chainlink aggregator, for cross-checking only. It is a
- * different and much slower feed than the Data Stream Polymarket settles on,
- * so it never drives a decision — it just makes a divergence visible.
+ * The free on-chain Chainlink aggregator. Used two ways: the engine reads this
+ * once per window to anchor Binance's price to it, and polls it separately in
+ * the background purely to display the live gap between the two.
  */
 export const GET = handler(async () => {
   try {
