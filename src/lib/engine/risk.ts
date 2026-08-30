@@ -121,8 +121,9 @@ export function evaluate(input: DecisionInput): Decision {
     notional = Math.max(0, Math.min(kellyUsd, capUsd));
     size = best.ask > 0 ? Math.floor(notional / best.ask) : 0;
 
-    // Do not consume more than a third of the resting depth at the touch —
-    // beyond that the fill price is no longer the price we assessed.
+    // Never size past the resting size at the touch. The edge was assessed
+    // against `quote.ask`, so an order large enough to walk into the next level
+    // would be filled at a price the decision never evaluated.
     size = Math.min(size, Math.floor(best.askSize));
     notional = size * best.ask;
 

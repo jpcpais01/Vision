@@ -283,6 +283,14 @@ literal word or a signed number.
 
 ---
 
+## How it works, in full
+
+`docs/how-it-works.html` is a standalone walkthrough of one 5-minute cycle —
+every stage in the order it happens, the conditional-update maths, all 22
+decision gates with their shipped defaults, the sizing and execution path, and
+the data sources with their failure behaviour. Open it in a browser; it needs no
+build step and no network beyond its two webfonts.
+
 ## Troubleshooting the forecast
 
 **"LLM attempt 1 timed out" / no forecast ever arrives.** Almost always the

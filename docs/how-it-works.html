@@ -1,0 +1,1049 @@
+<title>How Vision Trades</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  /* ─────────────────────────────────────────────────────────────
+     Palette inherited from the app's own tailwind tokens, which were
+     validated for colour-vision deficiency against its dark chart
+     surface. Light steps added here for the un-stamped light theme.
+     ───────────────────────────────────────────────────────────── */
+  :root {
+    color-scheme: light;
+    --ground:   #F1F4F8;
+    --card:     #FFFFFF;
+    --card-2:   #F7F9FC;
+    --rule:     #DCE3EC;
+    --rule-2:   #EBF0F6;
+    --ink:      #0D131C;
+    --ink-2:    #333F51;
+    --muted:    #5D6979;
+    --faint:    #8A94A3;
+    --accent:   #2A6FD0;
+    --accent-bg:#E7F0FC;
+    --up:       #12805B;
+    --up-bg:    #E1F2EB;
+    --down:     #BF4547;
+    --down-bg:  #FBEAEA;
+    --prior:    #B24270;
+    --warn:     #9A6600;
+    --warn-bg:  #FBF2DF;
+    --shadow:   0 1px 2px rgba(13,19,28,.05), 0 8px 24px -16px rgba(13,19,28,.22);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --ground:   #080B11;
+      --card:     #10161F;
+      --card-2:   #141C27;
+      --rule:     #212B3A;
+      --rule-2:   #1A222E;
+      --ink:      #DEE5EF;
+      --ink-2:    #B4C0D0;
+      --muted:    #8593A6;
+      --faint:    #63718A;
+      --accent:   #4E94E8;
+      --accent-bg:#132539;
+      --up:       #21A87A;
+      --up-bg:    #0E2C23;
+      --down:     #E97475;
+      --down-bg:  #331B1E;
+      --prior:    #D96A96;
+      --warn:     #D69B27;
+      --warn-bg:  #2E2410;
+      --shadow:   0 1px 2px rgba(0,0,0,.4), 0 10px 30px -18px rgba(0,0,0,.8);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground:   #080B11;
+    --card:     #10161F;
+    --card-2:   #141C27;
+    --rule:     #212B3A;
+    --rule-2:   #1A222E;
+    --ink:      #DEE5EF;
+    --ink-2:    #B4C0D0;
+    --muted:    #8593A6;
+    --faint:    #63718A;
+    --accent:   #4E94E8;
+    --accent-bg:#132539;
+    --up:       #21A87A;
+    --up-bg:    #0E2C23;
+    --down:     #E97475;
+    --down-bg:  #331B1E;
+    --prior:    #D96A96;
+    --warn:     #D69B27;
+    --warn-bg:  #2E2410;
+    --shadow:   0 1px 2px rgba(0,0,0,.4), 0 10px 30px -18px rgba(0,0,0,.8);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px 96px; }
+  .col  { max-width: 68ch; }
+
+  /* ── Masthead ───────────────────────────────────────────── */
+  header.masthead {
+    padding: 72px 0 40px;
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: 48px;
+  }
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 18px;
+  }
+  h1 {
+    font-family: Newsreader, Georgia, "Times New Roman", serif;
+    font-weight: 500;
+    font-size: clamp(2.4rem, 5.4vw, 3.6rem);
+    line-height: 1.08;
+    letter-spacing: -.015em;
+    margin: 0 0 20px;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-size: 1.15rem;
+    line-height: 1.6;
+    color: var(--ink-2);
+    max-width: 62ch;
+    margin: 0;
+  }
+  .standfirst strong { font-weight: 600; color: var(--ink); }
+
+  /* ── Sections ───────────────────────────────────────────── */
+  section { margin: 0 0 60px; scroll-margin-top: 24px; }
+  h2 {
+    font-family: Newsreader, Georgia, serif;
+    font-weight: 500;
+    font-size: 1.85rem;
+    line-height: 1.22;
+    letter-spacing: -.01em;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  h3 {
+    font-size: 1.02rem;
+    font-weight: 600;
+    letter-spacing: -.005em;
+    margin: 32px 0 8px;
+  }
+  .section-note {
+    color: var(--muted);
+    font-size: .93rem;
+    margin: 0 0 26px;
+    max-width: 64ch;
+  }
+  p { margin: 0 0 16px; }
+  .col p, .col ul, .col ol { max-width: 68ch; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 3px;
+  }
+  strong { font-weight: 600; }
+  code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .875em;
+    background: var(--card-2);
+    border: 1px solid var(--rule-2);
+    border-radius: 3px;
+    padding: .08em .34em;
+  }
+
+  ul, ol { margin: 0 0 16px; padding-left: 1.15rem; }
+  li { margin-bottom: 7px; }
+  li::marker { color: var(--faint); }
+
+  /* ── Stage list: keyed by real time in the window ────────── */
+  .stages { display: flex; flex-direction: column; gap: 0; }
+  .stage {
+    display: grid;
+    grid-template-columns: 108px minmax(0, 1fr);
+    gap: 28px;
+    padding: 26px 0;
+    border-top: 1px solid var(--rule);
+  }
+  .stage:first-child { border-top: none; padding-top: 4px; }
+  .stage-clock {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .02em;
+    color: var(--accent);
+    padding-top: 3px;
+  }
+  .stage-clock span {
+    display: block;
+    font-weight: 400;
+    font-size: 11px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-top: 3px;
+  }
+  .stage-body h3 { margin-top: 0; font-size: 1.12rem; }
+  .stage-body > p:last-child { margin-bottom: 0; }
+
+  /* ── Spec block: the exact values ───────────────────────── */
+  .spec {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 14px 16px;
+    margin: 16px 0;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12.5px;
+    line-height: 1.75;
+    color: var(--ink-2);
+    overflow-x: auto;
+  }
+  .spec-title {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-bottom: 8px;
+  }
+  .spec dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 20px; margin: 0; }
+  .spec dt { color: var(--muted); white-space: nowrap; }
+  .spec dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .spec .formula {
+    display: block;
+    color: var(--ink);
+    font-size: 13.5px;
+    padding: 4px 0;
+    white-space: nowrap;
+  }
+  .spec .why { font-family: "IBM Plex Sans", sans-serif; font-size: 13px; color: var(--muted); margin-top: 10px; line-height: 1.55; }
+
+  /* ── Callout ────────────────────────────────────────────── */
+  .callout {
+    border-left: 2px solid var(--accent);
+    background: var(--accent-bg);
+    padding: 14px 18px;
+    border-radius: 0 5px 5px 0;
+    margin: 22px 0;
+    font-size: .95rem;
+    color: var(--ink-2);
+  }
+  .callout.warn { border-left-color: var(--warn); background: var(--warn-bg); }
+  .callout strong { color: var(--ink); }
+  .callout > :last-child { margin-bottom: 0; }
+
+  /* ── Figures ────────────────────────────────────────────── */
+  figure {
+    margin: 32px 0;
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 24px 20px 16px;
+    box-shadow: var(--shadow);
+  }
+  figure .svg-scroll { overflow-x: auto; }
+  figure svg { display: block; max-width: 100%; height: auto; margin: 0 auto; color: var(--ink-2); }
+  figcaption {
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--muted);
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--rule-2);
+    max-width: 74ch;
+  }
+  figcaption strong { color: var(--ink-2); }
+
+  /* ── Tables ─────────────────────────────────────────────── */
+  .table-scroll { overflow-x: auto; margin: 20px 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+  caption {
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--faint);
+    padding-bottom: 10px;
+  }
+  th {
+    text-align: left;
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 0 14px 8px 0;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  td {
+    padding: 9px 14px 9px 0;
+    border-bottom: 1px solid var(--rule-2);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  td.num, th.num { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.gate { font-weight: 600; white-space: nowrap; }
+
+  .pill {
+    display: inline-block;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .pill.quality { background: var(--accent-bg); color: var(--accent); }
+  .pill.timing  { background: var(--up-bg);     color: var(--up); }
+  .pill.risk    { background: var(--down-bg);   color: var(--down); }
+  .pill.state   { background: var(--warn-bg);   color: var(--warn); }
+
+  /* ── Two-up cards ───────────────────────────────────────── */
+  .duo { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin: 24px 0; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 20px;
+  }
+  .card h3 { margin-top: 0; display: flex; align-items: center; gap: 9px; font-size: 1rem; }
+  .card > :last-child { margin-bottom: 0; }
+  .card ul { padding-left: 1.05rem; font-size: .93rem; }
+  .card.paper h3 { color: var(--accent); }
+  .card.live  h3 { color: var(--down); }
+
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 18px; font-size: 13.5px; margin: 0; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+
+  details {
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 0;
+    margin: 14px 0;
+    background: var(--card);
+  }
+  summary {
+    cursor: pointer;
+    padding: 12px 16px;
+    font-weight: 600;
+    font-size: .94rem;
+    list-style: none;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary::before { content: "▸ "; color: var(--faint); }
+  details[open] summary::before { content: "▾ "; }
+  details[open] summary { border-bottom: 1px solid var(--rule-2); }
+  .details-body { padding: 14px 16px 4px; }
+  .details-body > :last-child { margin-bottom: 12px; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 24px;
+    margin-top: 20px;
+    font-size: 13px;
+    color: var(--muted);
+    max-width: 72ch;
+  }
+
+  @media (max-width: 640px) {
+    .stage { grid-template-columns: 1fr; gap: 10px; }
+    .stage-clock { padding-top: 0; }
+    .stage-clock span { display: inline; margin-left: 8px; }
+    header.masthead { padding-top: 44px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">Vision · Polymarket BTC 5-minute UP/DOWN</p>
+  <h1>How the bot decides, every five minutes</h1>
+  <p class="standfirst">
+    Every five minutes Polymarket opens a new bet: will Bitcoin close higher than it was
+    when the window opened? Vision answers it twice — once with a language model, then
+    continuously with a simulation that <strong>overrules the model using what Bitcoin
+    actually did while it was thinking</strong> — and trades only if the answer disagrees
+    with the order book by enough to be worth the risk.
+  </p>
+</header>
+
+<section class="col">
+  <h2>The bet itself</h2>
+  <p class="section-note">Everything downstream is a statement about one number, so it is worth being precise about which.</p>
+
+  <p>
+    A market opens. Bitcoin's price at that instant becomes the <strong>barrier</strong>.
+    Five minutes later the market settles <strong>UP</strong> if Bitcoin is strictly above
+    the barrier and <strong>DOWN</strong> if it is not.
+  </p>
+  <p>
+    Both outcomes trade as separate contracts that pay <strong>$1</strong> if right and
+    <strong>$0</strong> if wrong. A price of <code>0.58</code> for UP is the market saying
+    "58% likely" — buy it, and you make 42¢ per share when it wins and lose 58¢ when it
+    doesn't. So a probability and a price are the same kind of thing here, which is what
+    makes the whole strategy expressible in one line: <strong>buy when our probability is
+    meaningfully higher than their price.</strong>
+  </p>
+  <div class="callout">
+    <strong>Why this is hard.</strong> Over five minutes Bitcoin is very close to a coin
+    flip. Real edges are small and rare, and the order book is not naive. Most of the code
+    below exists to stop the bot from trading — not to make it trade.
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>One window, start to finish</h2>
+    <p class="section-note">
+      The loop runs in the browser tab, on a 250 ms heartbeat. Here is the whole thing in
+      the order it happens.
+    </p>
+  </div>
+
+  <figure>
+    <div class="svg-scroll">
+      <svg viewBox="0 0 880 262" role="img" aria-label="Timeline of one 300-second market window. The Bitcoin tape records continuously. A single LLM call is dispatched at the window open and returns after a few seconds. The Monte Carlo simulation then re-runs about once a second until the window closes. Trading is only permitted between 40 and 255 seconds into the window.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+          </marker>
+          <pattern id="mcTicks" width="9" height="12" patternUnits="userSpaceOnUse">
+            <rect x="0" y="0" width="2.2" height="12" fill="currentColor" opacity=".55"/>
+          </pattern>
+        </defs>
+
+        <!-- lane labels -->
+        <g font-family="IBM Plex Mono, monospace" font-size="11.5" fill="currentColor" text-anchor="end">
+          <text x="138" y="44">BTC tape</text>
+          <text x="138" y="88">LLM forecast</text>
+          <text x="138" y="132">Monte Carlo</text>
+          <text x="138" y="176">Trading allowed</text>
+        </g>
+
+        <!-- lane 1: continuous tape -->
+        <rect x="150" y="30" width="700" height="18" rx="3" fill="currentColor" opacity=".16"/>
+        <text x="500" y="43" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">every trade, folded into 10-second bars — never stops</text>
+
+        <!-- lane 2: one LLM call -->
+        <rect x="150" y="74" width="47" height="18" rx="3" fill="var(--prior)" opacity=".92"/>
+        <text x="207" y="87" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="var(--prior)">one call · ~2–4 s · 20 s budget · never repeated</text>
+
+        <!-- lane 3: repeated simulation -->
+        <rect x="197" y="118" width="653" height="18" rx="3" fill="url(#mcTicks)"/>
+        <rect x="197" y="118" width="653" height="18" rx="3" fill="none" stroke="currentColor" stroke-opacity=".3"/>
+        <rect x="358" y="119" width="334" height="16" rx="2" fill="var(--card)" opacity=".93"/>
+        <text x="525" y="131" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">re-simulated ~1×/second from the price right now</text>
+
+        <!-- lane 4: trade window -->
+        <rect x="243" y="162" width="502" height="18" rx="3" fill="var(--up)" opacity=".22"/>
+        <rect x="243" y="162" width="502" height="18" rx="3" fill="none" stroke="var(--up)" stroke-opacity=".6"/>
+        <text x="494" y="175" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="var(--up)" text-anchor="middle">T+40 s → T+255 s — enough path behind, enough clock ahead</text>
+
+        <!-- axis -->
+        <line x1="150" y1="206" x2="850" y2="206" stroke="currentColor" stroke-opacity=".45"/>
+        <g font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor" opacity=".75" text-anchor="middle">
+          <line x1="150" y1="206" x2="150" y2="212" stroke="currentColor"/><text x="150" y="226">0:00</text>
+          <line x1="290" y1="206" x2="290" y2="212" stroke="currentColor"/><text x="290" y="226">1:00</text>
+          <line x1="430" y1="206" x2="430" y2="212" stroke="currentColor"/><text x="430" y="226">2:00</text>
+          <line x1="570" y1="206" x2="570" y2="212" stroke="currentColor"/><text x="570" y="226">3:00</text>
+          <line x1="710" y1="206" x2="710" y2="212" stroke="currentColor"/><text x="710" y="226">4:00</text>
+          <line x1="850" y1="206" x2="850" y2="212" stroke="currentColor"/><text x="850" y="226">5:00</text>
+        </g>
+
+        <!-- bookend events -->
+        <line x1="150" y1="24" x2="150" y2="206" stroke="var(--accent)" stroke-width="1.6"/>
+        <line x1="850" y1="24" x2="850" y2="206" stroke="var(--accent)" stroke-width="1.6"/>
+        <g font-family="IBM Plex Sans, sans-serif" font-size="11.5" font-weight="600" fill="var(--accent)">
+          <text x="150" y="16" text-anchor="start">barrier captured</text>
+          <text x="850" y="16" text-anchor="end">settles UP or DOWN</text>
+        </g>
+
+        <!-- the point of the picture: the tape keeps moving during the call -->
+        <rect x="150" y="26" width="47" height="26" fill="var(--prior)" opacity=".18"/>
+        <line x1="197" y1="246" x2="197" y2="60" stroke="var(--prior)" stroke-width="1.2" stroke-dasharray="3 3" marker-end="url(#ar)"/>
+        <text x="205" y="252" font-family="IBM Plex Sans, sans-serif" font-size="11" fill="var(--prior)">
+          BTC moves during the call — the model never sees this, the simulation does
+        </text>
+      </svg>
+    </div>
+    <figcaption>
+      <strong>The forecast is a single event; the probability is continuous.</strong>
+      The model is asked once, near the open, and answers a question about the whole window.
+      By the time it replies, Bitcoin has already moved — and it keeps moving for another
+      four-and-a-half minutes. The simulation re-runs every second from wherever price
+      actually is, so the number the bot trades on is never the number the model returned.
+    </figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="col">
+    <h2>Each stage, in order</h2>
+    <p class="section-note">
+      Plain description first, exact values second. Every number shown is the shipped
+      default and every one of them is editable from the dashboard.
+    </p>
+  </div>
+
+  <div class="stages">
+
+    <div class="stage">
+      <div class="stage-clock">T+0 s<span>capture</span></div>
+      <div class="stage-body">
+        <h3>Pin the barrier</h3>
+        <p>
+          The bot polls Polymarket every 3 seconds for the current BTC 5-minute market. When
+          a new one appears, it looks back through its own recorded tick history for the price
+          at the exact moment the window opened, and locks that in as the barrier.
+        </p>
+        <p>
+          Getting this right matters more than anything else in the system — every probability
+          produced later is a statement about this one number. If the bot was started
+          mid-window and has no tick from the open, it falls back to the nearest 10-second bar
+          and labels the barrier <strong>estimated</strong> in the interface, because being a
+          dollar or two out is a real error and hiding it would be worse than showing it.
+        </p>
+        <div class="spec">
+          <div class="spec-title">How the market is found</div>
+          <p style="margin:0">
+            Polymarket's Gamma API is filtered for open markets whose question or slug mentions
+            Bitcoin <em>and</em> an up/down framing, whose open-to-close span is genuinely
+            210–400 seconds, sorted by soonest close. Outcome labels are mapped onto UP/DOWN
+            from three vocabularies (<code>Up/Down</code>, <code>Yes/No</code>,
+            <code>Higher/Lower</code>) and anything unrecognised is <em>rejected</em>, never
+            guessed — getting that backwards would invert every trade.
+          </p>
+          <p class="why">A hard-coded slug would have been simpler. The slug format for this series has already changed more than once.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-clock">T+0 s<span>assemble</span></div>
+      <div class="stage-body">
+        <h3>Build the hour of tape</h3>
+        <p>
+          On startup the bot pulls one hour of Bitcoin history at 10-second resolution and
+          keeps it current from a live trade feed. Every incoming trade updates the newest
+          10-second bar; volatility is recomputed from the whole hour every 5 seconds.
+        </p>
+        <div class="spec">
+          <div class="spec-title">Volatility estimate</div>
+          <dl>
+            <dt>input</dt><dd>log returns of consecutive 10-second closes</dd>
+            <dt>windows</dt><dd>5 min ×0.45, 15 min ×0.30, 60 min ×0.25 — blended in variance, not in vol</dd>
+            <dt>EWMA</dt><dd>λ = 0.97 over the full series (≈5.5-minute half-life)</dd>
+            <dt>combined</dt><dd>σ² = 0.6·EWMA + 0.4·window blend, then σ per second</dd>
+            <dt>also kept</dt><dd>excess kurtosis, which decides how fat the simulation's tails are</dd>
+          </dl>
+          <p class="why">Weighted toward the recent because vol at 14:00 says little about vol at 14:05; blended across windows because a single bad tick can otherwise double the estimate.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-clock">T+0 s<span>dispatch</span></div>
+      <div class="stage-body">
+        <h3>Ask the model for a probability</h3>
+        <p>
+          The full hour goes to <code>deepseek/deepseek-v4-flash-0731</code> through OpenRouter.
+          The prices are sent as <em>dollar offsets from the barrier</em>, so zero means "exactly
+          at the line" and the model never has to do the subtraction itself.
+        </p>
+        <p>
+          It is asked for a <strong>calibrated probability</strong>, not a direction — told
+          explicitly that 0.50 is the correct answer when it has no view, and that it is scored
+          by Brier, where an overconfident wrong answer costs far more than a hedged one. A
+          model asked "up or down?" gives you a coin flip dressed as conviction.
+        </p>
+        <div class="spec">
+          <div class="spec-title">Also precomputed for it, because models estimate these badly</div>
+          <dl>
+            <dt>the anchor</dt><dd>distance to barrier in units of remaining volatility, plus Φ(·) of it</dd>
+            <dt>returns</dt><dd>1 m / 5 m / 15 m / 30 m / 60 m, in basis points</dd>
+            <dt>vol</dt><dd>annualised, per-10s in bps, short/long ratio, excess kurtosis</dd>
+            <dt>momentum</dt><dd>sign persistence of the last 12 bars, position in the 60-minute range</dd>
+            <dt>quality</dt><dd>which feed, whether it is interpolated, Chainlink basis</dd>
+          </dl>
+          <p class="why">The anchor is the dominant term in the true probability. Handing it over turns the question from "guess" into "justify a deviation from this".</p>
+        </div>
+        <div class="spec">
+          <div class="spec-title">Request settings</div>
+          <dl>
+            <dt>budget</dt><dd>20 s total across all attempts — not per attempt</dd>
+            <dt>attempts</dt><dd>strict JSON schema → JSON mode → JSON mode without the reasoning field</dd>
+            <dt>reasoning</dt><dd><code>{ effort: "none", exclude: true }</code></dd>
+            <dt>max_tokens</dt><dd>1500 for a ~120-token answer</dd>
+            <dt>temperature</dt><dd>0.2 — zero collapses onto round numbers like 0.5 and 0.6</dd>
+            <dt>401/402/403</dt><dd>never retried; bad key or no credit will not fix itself</dd>
+          </dl>
+          <p class="why">Reasoning is off and the token budget is generous for the same reason: on OpenRouter reasoning tokens share <code>max_tokens</code>, and a model that thinks past the budget returns empty content — which looks exactly like a hang.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-clock">while waiting<span>the key idea</span></div>
+      <div class="stage-body">
+        <h3>Keep recording</h3>
+        <p>
+          Nothing blocks on the model. The tick feed keeps running, the bars keep filling, and
+          the simulation keeps producing a probability from volatility alone with a neutral
+          50/50 prior — so the dashboard always shows a live number, and the model's actual
+          contribution becomes visible as the jump when its answer lands.
+        </p>
+        <p>
+          Those few seconds are not dead time. They are information the model could not have
+          had, and the next stage exists to use them.
+        </p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-clock">on arrival<span>and ~1×/s after</span></div>
+      <div class="stage-body">
+        <h3>Overrule the model with what actually happened</h3>
+        <p>
+          This is the part that makes the system more than a wrapper around a chatbot. The
+          model's probability is <strong>not blended in as a number</strong>. It is converted
+          into a <em>drift</em> — the steady push that would have produced that probability
+          under the volatility we measured — and then that drift is applied only to the
+          seconds that are left.
+        </p>
+        <p>
+          The simulation starts from the price <strong>right now</strong>, not from the barrier.
+          The part of the window that already happened is carried in the starting point rather
+          than being simulated again.
+        </p>
+        <div class="spec">
+          <div class="spec-title">The conditional update</div>
+          <span class="formula">barrier distance   b  = ln(S₀ / Sₜ)</span>
+          <span class="formula">prior → drift      m  = σ · Φ⁻¹(p_llm) / √T · w</span>
+          <span class="formula">prior weight       w  = 0.8 · (0.5 + 0.5 · confidence)</span>
+          <span class="formula">terminal price     S_T = Sₜ · exp(m·τ + σ√τ · Z)</span>
+          <span class="formula">answer             P(UP) = share of paths with S_T &gt; S₀</span>
+          <dl style="margin-top:10px">
+            <dt>S₀ / Sₜ</dt><dd>barrier price / price now</dd>
+            <dt>T / τ</dt><dd>full window (300 s) / seconds remaining</dd>
+            <dt>Z</dt><dd>Student-t, 4 d.o.f., standardised — crypto tails are not Gaussian</dd>
+          </dl>
+        </div>
+        <figure>
+          <div class="svg-scroll">
+            <svg viewBox="0 0 620 268" role="img" aria-label="Diagram of the conditional Monte Carlo. The barrier is a horizontal line. The realised price path runs from the window open to the present, ending below the barrier. From that point a cone of simulated paths fans out to the window close. The probability of UP is the fraction of the cone's end that finishes above the barrier line.">
+              <defs>
+                <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                  <path d="M 0 1 L 9 5 L 0 9 z" fill="currentColor"/>
+                </marker>
+              </defs>
+
+              <!-- cone of simulated futures, split at the barrier -->
+              <path d="M 300 168 L 560 62 L 560 118 Z" fill="var(--up)" opacity=".28"/>
+              <path d="M 300 168 L 560 118 L 560 244 Z" fill="var(--down)" opacity=".24"/>
+              <path d="M 300 168 L 560 62 M 300 168 L 560 244" stroke="currentColor" stroke-opacity=".38" stroke-dasharray="3 3" fill="none"/>
+
+              <!-- barrier -->
+              <line x1="60" y1="118" x2="590" y2="118" stroke="currentColor" stroke-width="1.5" stroke-dasharray="6 4"/>
+              <text x="62" y="138" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor">S₀ — the barrier</text>
+
+              <!-- realised path -->
+              <polyline points="60,118 92,104 124,126 156,112 188,140 220,132 252,158 300,168"
+                        fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+              <circle cx="300" cy="168" r="4.5" fill="var(--accent)" stroke="var(--card)" stroke-width="2"/>
+
+              <!-- now marker -->
+              <line x1="300" y1="46" x2="300" y2="228" stroke="currentColor" stroke-opacity=".5"/>
+
+              <!-- brackets -->
+              <line x1="60" y1="248" x2="296" y2="248" stroke="currentColor" stroke-opacity=".55" marker-start="url(#ar2)" marker-end="url(#ar2)"/>
+              <line x1="304" y1="248" x2="560" y2="248" stroke="currentColor" stroke-opacity=".55" marker-start="url(#ar2)" marker-end="url(#ar2)"/>
+              <g font-family="IBM Plex Sans, sans-serif" font-size="11" fill="currentColor" text-anchor="middle">
+                <text x="178" y="264" opacity=".8">already happened — not simulated</text>
+                <text x="432" y="264" opacity=".8">τ seconds left — simulated 20,000×</text>
+              </g>
+
+              <!-- labels -->
+              <g font-family="IBM Plex Sans, sans-serif" font-size="11.5">
+                <text x="300" y="40" fill="var(--accent)" font-weight="600" text-anchor="middle">Sₜ — start here, not at S₀</text>
+                <text x="572" y="92" fill="var(--up)" font-weight="600" text-anchor="end">finishes UP</text>
+                <text x="572" y="196" fill="var(--down)" font-weight="600" text-anchor="end">finishes DOWN</text>
+              </g>
+
+            </svg>
+          </div>
+          <figcaption>
+            <strong>P(UP) is the green share of the cone's right-hand edge.</strong>
+            The realised path is an input, not something to re-simulate — it decides where the
+            cone starts. Here price has drifted below the barrier, so most of the cone lands in
+            the red, and it would take an implausible drift in the time left to change that.
+            A bullish forecast cannot argue with the geometry; it can only tilt the cone.
+          </figcaption>
+        </figure>
+
+        <p>
+          The behaviour this buys is the whole point: a model that said <strong>75% UP</strong>,
+          on a window where Bitcoin has since fallen $150 with 30 seconds left, comes out of the
+          updater below <strong>5%</strong> — because the drift needed to recover the barrier in
+          the time remaining is not plausible at the measured volatility. A pipeline that
+          averaged the model's number with a market price would still be buying UP.
+        </p>
+        <div class="spec">
+          <div class="spec-title">How the paths are generated</div>
+          <dl>
+            <dt>paths</dt><dd>20,000, re-run about once a second</dd>
+            <dt>engine</dt><dd>half parametric (Student-t), half block bootstrap — averaged</dd>
+            <dt>bootstrap</dt><dd>resamples real recent 10-second returns in blocks of 2–6, de-meaned and rescaled to current σ so it keeps the shape of the tape but not its stale volatility</dd>
+            <dt>variance cut</dt><dd>antithetic pairs — every shock is also simulated mirrored</dd>
+            <dt>error bar</dt><dd>batch means over 25 batches, floored at 1/N</dd>
+            <dt>reproducible</dt><dd>seeded from the market id, so any decision can be replayed exactly</dd>
+          </dl>
+          <p class="why">Two engines because neither is trustworthy alone: the parametric one gets the tails wrong, the bootstrap one is hostage to whatever happened to be in its sample.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-clock">then<span>haircuts</span></div>
+      <div class="stage-body">
+        <h3>Make the number pessimistic on purpose</h3>
+        <p>
+          Two deliberate reductions are applied before the probability is allowed near an order,
+          and both always move against taking the trade.
+        </p>
+        <div class="spec">
+          <span class="formula">shrink   p′ = 0.5 + (p − 0.5) × (1 − 0.10)</span>
+          <span class="formula">haircut  p_win = p′ − (simulation standard error)</span>
+          <span class="formula">edge     = p_win − ask</span>
+          <p class="why">Every stage — the model, the vol estimate, the simulation — adds error that pushes probabilities away from the centre. Shrinking is the cheapest correction available, and it only ever costs you the trades that were marginal. Subtracting the error bar means simulation noise can never manufacture an edge.</p>
+        </div>
+        <p>
+          Note that the edge is measured against the <strong>ask</strong> — the price you can
+          actually buy at — not the midpoint. Midpoint edges look about half a spread better
+          than they are and cannot be traded.
+        </p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-clock">T+40–255 s<span>gates</span></div>
+      <div class="stage-body">
+        <h3>Twenty-two ways to say no</h3>
+        <p>
+          Both sides are scored, the better one is picked, and then it has to survive every gate
+          below. All of them are checked on every pass, and all failures are recorded — so the
+          dashboard can tell you not just that it declined, but everything that was wrong at once.
+        </p>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="table-scroll">
+    <table>
+      <caption>Every gate, with its shipped default</caption>
+      <thead>
+        <tr>
+          <th>Gate</th>
+          <th>Blocks when</th>
+          <th class="num">Default</th>
+          <th>Kind</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="gate">Edge</td><td>probability minus ask is too small</td><td class="num">&lt; 0.04</td><td><span class="pill quality">quality</span></td></tr>
+        <tr><td class="gate">Edge ratio</td><td>return on capital is too small even if the cents look fine</td><td class="num">&lt; 6%</td><td><span class="pill quality">quality</span></td></tr>
+        <tr><td class="gate">Spread</td><td>bid–ask gap is wider than the edge can absorb</td><td class="num">&gt; 0.04</td><td><span class="pill quality">quality</span></td></tr>
+        <tr><td class="gate">Top of book</td><td>too few shares resting at the price we assessed</td><td class="num">&lt; 25</td><td><span class="pill quality">quality</span></td></tr>
+        <tr><td class="gate">Depth</td><td>too little notional within 2¢ of the touch</td><td class="num">&lt; $50</td><td><span class="pill quality">quality</span></td></tr>
+        <tr><td class="gate">Price bounds</td><td>contract is too cheap or too dear to be worth the tail risk</td><td class="num">outside 0.06–0.94</td><td><span class="pill quality">quality</span></td></tr>
+        <tr><td class="gate">Model confidence</td><td>the model itself says it has no information</td><td class="num">&lt; 0.25</td><td><span class="pill quality">quality</span></td></tr>
+        <tr><td class="gate">Too early</td><td>not enough realised path to condition on yet</td><td class="num">&gt; 260 s left</td><td><span class="pill timing">timing</span></td></tr>
+        <tr><td class="gate">Too late</td><td>not enough clock left for the edge to realise</td><td class="num">&lt; 45 s left</td><td><span class="pill timing">timing</span></td></tr>
+        <tr><td class="gate">Data freshness</td><td>the stalest of the price feed and the order book is too old</td><td class="num">&gt; 4,000 ms</td><td><span class="pill timing">timing</span></td></tr>
+        <tr><td class="gate">Forecast latency</td><td>the model's round trip was so slow its view was already stale</td><td class="num">&gt; 15,000 ms</td><td><span class="pill timing">timing</span></td></tr>
+        <tr><td class="gate">Open positions</td><td>already holding the maximum</td><td class="num">≥ 1</td><td><span class="pill risk">risk</span></td></tr>
+        <tr><td class="gate">Same market</td><td>already positioned in this exact window</td><td class="num">any</td><td><span class="pill risk">risk</span></td></tr>
+        <tr><td class="gate">Trades per hour</td><td>rate limit reached</td><td class="num">≥ 8</td><td><span class="pill risk">risk</span></td></tr>
+        <tr><td class="gate">Trades per day</td><td>daily count reached</td><td class="num">≥ 40</td><td><span class="pill risk">risk</span></td></tr>
+        <tr><td class="gate">Daily loss</td><td>lost too much today</td><td class="num">≤ −$150</td><td><span class="pill risk">risk</span></td></tr>
+        <tr><td class="gate">Losing streak</td><td>consecutive losses — circuit breaker</td><td class="num">≥ 5</td><td><span class="pill risk">risk</span></td></tr>
+        <tr><td class="gate">Bankroll</td><td>nothing left to trade with</td><td class="num">&lt; $1</td><td><span class="pill risk">risk</span></td></tr>
+        <tr><td class="gate">Minimum size</td><td>position after all caps is below the exchange minimum</td><td class="num">below market min</td><td><span class="pill risk">risk</span></td></tr>
+        <tr><td class="gate">Auto-trade</td><td>the switch is off</td><td class="num">off by default</td><td><span class="pill state">state</span></td></tr>
+        <tr><td class="gate">Kill switch</td><td>emergency stop engaged</td><td class="num">server-side</td><td><span class="pill state">state</span></td></tr>
+        <tr><td class="gate">Market state</td><td>the market stopped accepting orders</td><td class="num">live check</td><td><span class="pill state">state</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="col">
+    <div class="callout warn">
+      <strong>Two of these used to be impossible to satisfy at once.</strong> Forecast latency
+      was originally measured as <em>time since the model was asked</em>, which grows all
+      window, while "too early" requires waiting 40 seconds before entering. One gate demanded
+      early, the other demanded late, and the overlap was empty — the bot could never trade, in
+      any window, while showing perfectly reasonable-looking rejections. It now measures the
+      model's own round trip, which does not depend on when in the window you act. There is a
+      test that fails if that ever regresses.
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>Sizing and execution</h2>
+    <p class="section-note">What happens in the roughly one second between "yes" and a filled position.</p>
+
+    <h3>How big</h3>
+    <p>
+      Position size starts from the Kelly criterion — the mathematically optimal stake if your
+      probability is exactly right — and is then cut down repeatedly, because it never is.
+    </p>
+    <div class="spec">
+      <span class="formula">kelly       f* = (p_win − ask) / (1 − ask)</span>
+      <span class="formula">stake       $ = bankroll × f* × 0.25</span>
+      <span class="formula">then capped at min($50, 5% of bankroll, bankroll)</span>
+      <span class="formula">then capped at the shares resting at the touch</span>
+      <span class="formula">shares      = floor(stake / ask)</span>
+      <p class="why">The last cap matters more than it looks: the edge was assessed against the touch price, so an order big enough to eat into the next level would be filled at a price the decision never evaluated. The bankroll also compounds — limits scale with realised P&amp;L, not with the number typed in at the start of the session.</p>
+    </div>
+
+    <h3>How it is sent</h3>
+    <p>
+      The browser proposes; the server disposes. Nothing the browser sends is trusted for
+      anything that matters, because the browser is editable and the server is not.
+    </p>
+    <ol>
+      <li>The browser posts an intent with a limit price of <code>max(ask, p_win − minEdge/2)</code> — never paying past the point where the edge is gone.</li>
+      <li>The server reads the <strong>kill switch</strong> from its own store, not from the request.</li>
+      <li>The server <strong>re-fetches the order book</strong>, and refuses if the market has moved past the limit, if the spread has widened, or if the price has left the configured bounds.</li>
+      <li>The server <strong>re-clamps the size</strong> against its own copy of the risk config, so editing the request in devtools cannot exceed a cap.</li>
+      <li>It pays at most one tick through the touch — enough to cross reliably, not enough to turn a 4¢ edge into a 1¢ one.</li>
+      <li>Only then does it simulate the fill, or send it.</li>
+    </ol>
+  </div>
+
+  <div class="duo">
+    <div class="card paper">
+      <h3>PAPER</h3>
+      <p style="font-size:.93rem;color:var(--muted);margin-bottom:12px">Real everything, except the money.</p>
+      <ul>
+        <li>Real market discovery, real live order book, real Bitcoin feed, real model calls.</li>
+        <li>Fills are priced by <strong>walking the actual resting book</strong>, level by level.</li>
+        <li>Each level is charged one tick worse than shown, standing in for the race against other takers.</li>
+        <li>Reports an honest <strong>partial fill</strong> when the book runs out, and never invents liquidity that was not there.</li>
+        <li>Refuses to fill above the configured maximum price rather than pretending the deep levels were cheap.</li>
+      </ul>
+    </div>
+    <div class="card live">
+      <h3>LIVE</h3>
+      <p style="font-size:.93rem;color:var(--muted);margin-bottom:12px">Real orders. Three independent locks.</p>
+      <ul>
+        <li><code>ALLOW_LIVE_TRADING=true</code> must be set <strong>in the server environment</strong> — it is not a switch in the interface.</li>
+        <li>A Polygon private key must be configured server-side. It is read in exactly one file and never reaches the browser.</li>
+        <li>The request must ask for LIVE and the kill switch must be off.</li>
+        <li>Orders are fill-and-kill: on a five-minute market a resting remainder is a liability, not an opportunity.</li>
+        <li>The signing stack is behind a dynamic import, so PAPER mode never loads it at all.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>Settlement</h2>
+    <p>
+      At the close the bot takes the Bitcoin price at that instant, compares it to the barrier,
+      and marks every position on that market.
+    </p>
+    <div class="spec">
+      <span class="formula">win    P&amp;L = shares × (1 − entry price)</span>
+      <span class="formula">loss   P&amp;L = − shares × entry price</span>
+    </div>
+    <p>
+      The window is then written to the historical record <strong>whether or not it was
+      traded</strong> — with the model's number, the simulation's number, the volatility, both
+      order books, the decision and the reason for any rejection. The skipped windows are the
+      more useful half of that record: they are how you tell "the thresholds are too tight"
+      apart from "there was genuinely no edge".
+    </p>
+    <div class="callout warn">
+      <strong>One honest caveat.</strong> In PAPER mode this settlement <em>is</em> the P&amp;L.
+      In LIVE mode the on-chain oracle decides, and it can disagree with our exchange feed at
+      the boundary. That is exactly why the Chainlink price is tracked and its gap to the
+      exchange feed displayed throughout the window, rather than quietly ignored.
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>Where the data comes from</h2>
+    <p class="section-note">
+      The trading loop lives in the browser and the secrets live on the server. That split is a
+      latency decision: the window is 300 seconds, and every hop through a serverless function
+      is time spent on a clock that does not stop.
+    </p>
+  </div>
+
+  <div class="table-scroll">
+    <table>
+      <caption>Feeds and their failure behaviour</caption>
+      <thead>
+        <tr><th>What</th><th>Source</th><th>If it fails</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="gate">Live BTC ticks</td>
+          <td>Binance trade WebSocket, direct from the browser</td>
+          <td>Falls back to server polling every 1 s; the interface says which path it is on</td>
+        </tr>
+        <tr>
+          <td class="gate">Hour of 10 s history</td>
+          <td>Binance 1-second klines, six hostnames tried in turn</td>
+          <td>Coinbase or Kraken 60 s candles, upsampled and flagged <strong>interpolated</strong></td>
+        </tr>
+        <tr>
+          <td class="gate">Order books</td>
+          <td>Polymarket CLOB market WebSocket, deltas applied locally</td>
+          <td>Reconciled against REST every 4 s regardless; polls every 1.2 s if the socket dies</td>
+        </tr>
+        <tr>
+          <td class="gate">Markets</td>
+          <td>Polymarket Gamma API, polled every 3 s</td>
+          <td>Surfaces the error; no market means no cycle</td>
+        </tr>
+        <tr>
+          <td class="gate">Settlement reference</td>
+          <td>Chainlink BTC/USD aggregator over JSON-RPC, every 20 s</td>
+          <td>Advisory only — a failed read costs the basis readout and nothing else</td>
+        </tr>
+        <tr>
+          <td class="gate">Forecast</td>
+          <td>OpenRouter</td>
+          <td>Window is observed and recorded, but never traded without a forecast</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="col">
+    <details>
+      <summary>Why interpolated history is flagged so loudly</summary>
+      <div class="details-body">
+        <p>
+          Only Binance publishes 1-second klines, so only Binance can reconstruct a true
+          10-second history an hour deep. If it is unreachable, the fallback stretches
+          60-second candles across the 10-second grid by interpolating between closes.
+        </p>
+        <p>
+          The result has the right level and the right drift but <strong>understates realised
+          volatility</strong>, because all the movement inside each minute has been smoothed
+          away. Understated volatility makes every edge look bigger than it is. So the feed is
+          labelled in the interface and passed to the model as unreliable rather than being
+          silently traded on.
+        </p>
+      </div>
+    </details>
+    <details>
+      <summary>Why the tick history is deliberately thinned</summary>
+      <div class="details-body">
+        <p>
+          Binance can stream fifty Bitcoin trades a second. Storing all of them would flush the
+          buffer in under two minutes — and take the window's opening price with it, which is
+          the one value the entire system is measured against.
+        </p>
+        <p>
+          So the newest price is always exact, but the retained series is thinned to about five
+          points a second. That holds roughly twenty minutes of tape, comfortably spanning the
+          five-minute window.
+        </p>
+      </div>
+    </details>
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>Stopping it</h2>
+    <p>
+      <strong>The kill switch</strong> sets a flag in server-side storage that is read on every
+      single order request — so a stale browser tab left open on another machine cannot trade
+      through it. It also cancels every resting order on the account, forces auto-trade off, and
+      stops the engine.
+    </p>
+    <p>
+      Beyond that, auto-trading is <strong>off by default</strong> and stays off until switched
+      on; every risk limit is enforced server-side and clamped into documented bounds on write;
+      and the whole dashboard can be put behind a shared secret, since a deployment URL is
+      public by default and in LIVE mode this page spends money.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="col">
+    <h2>How you know if it works</h2>
+    <p class="section-note">Over a few dozen five-minute bets, profit and loss is almost pure noise. These converge faster.</p>
+    <dl class="kv" style="margin-bottom:20px">
+      <dt>Brier score</dt><dd>mean squared error of the probability; 0.25 is a coin flip, lower is better</dd>
+      <dt>Brier skill</dt><dd>how much better than a coin flip, as a percentage</dd>
+      <dt>Calibration</dt><dd>of the windows you called 70%, did about 70% happen?</dd>
+      <dt>Win rate</dt><dd>with a Wilson interval, because 6 of 10 is not 60%</dd>
+      <dt>P&amp;L, drawdown, Sharpe</dt><dd>the truth in the end, and noise before it</dd>
+    </dl>
+    <p>
+      Calibration is scored over <strong>every window observed, not only the traded ones</strong>.
+      Scoring only trades would sample exactly the windows where the model disagreed with the
+      market — the most biased subset available. Below twenty resolved trades the dashboard says
+      so on the page, rather than leaving you to infer it from a flattering number.
+    </p>
+  </div>
+</section>
+
+<section class="col">
+  <h2>What it cannot do</h2>
+  <ul>
+    <li><strong>It needs the tab open.</strong> The loop runs in the browser. Closing it stops trading — which is the safer default anyway.</li>
+    <li><strong>Without durable storage configured, history is lost</strong> on every serverless cold start.</li>
+    <li><strong>A barrier captured mid-window is an estimate</strong>, and a dollar of error there is a real edge error.</li>
+    <li><strong>It will not trade without a forecast.</strong> No model, no position — volatility alone is not enough.</li>
+    <li><strong>The edge may simply not exist.</strong> A five-minute Bitcoin binary is close to a coin flip by construction, and Polymarket's book is not naive. Run it in PAPER long enough that the calibration curve means something before risking anything real.</li>
+  </ul>
+</section>
+
+<footer>
+  Vision — conditional Monte Carlo trading system for Polymarket Bitcoin 5-minute UP/DOWN
+  markets. Every number on this page is a shipped default and is editable at runtime.
+  Not financial advice.
+</footer>
+
+</div>
