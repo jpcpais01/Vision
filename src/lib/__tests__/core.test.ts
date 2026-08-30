@@ -8,6 +8,7 @@ import { NormalSampler, Rng } from '../math/rng';
 import { fillGaps, returns, shiftBars, shiftTicks, toBars, volatility } from '../bars';
 import { fill, quote } from '../book';
 import { parse, forecast, buildPrompt } from '../llm';
+import { discover } from '../market';
 import { DEFAULT_CONFIG, sanitize } from '../config';
 import type { Bar } from '../types';
 
@@ -336,6 +337,131 @@ test('a bad key fails immediately instead of burning the budget', async () => {
       assert.equal(seen.length, 1, 'a 401 will not fix itself on retry');
     }
   );
+});
+
+// ── Market discovery ────────────────────────────────────────────────────────
+
+/**
+ * A stand-in for Gamma's /markets?slug=... endpoint. Polymarket's BTC 5-minute
+ * markets sit on a fixed grid — each opens on a UTC timestamp divisible by 300
+ * and is slugged `btc-updown-5m-<window-start-seconds>` — so the current and
+ * next window can be computed from the clock. This is the fix for a real bug:
+ * the previous approach searched a listing by question text, which Polymarket
+ * also uses for BTC "Up or Down" series at other durations (hourly, daily),
+ * and documented `active=true` filtering that can drop these recurring
+ * markets from that listing entirely — either way, a wrong or missing market,
+ * not a clean failure.
+ */
+function gammaRow(startSec: number) {
+  return {
+    id: `mkt-${startSec}`,
+    slug: `btc-updown-5m-${startSec}`,
+    question: 'Bitcoin Up or Down',
+    outcomes: '["Up","Down"]',
+    clobTokenIds: `["up-${startSec}","down-${startSec}"]`,
+    closed: false,
+    acceptingOrders: true,
+  };
+}
+
+async function withGamma(
+  known: Set<number>,
+  run: (url: string, requested: string[]) => Promise<void>
+) {
+  const requested: string[] = [];
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? '', 'http://x');
+    const slug = url.searchParams.get('slug') ?? '';
+    requested.push(slug);
+    const m = slug.match(/^btc-updown-5m-(\d+)$/);
+    const startSec = m ? Number(m[1]) : NaN;
+    const body = known.has(startSec) ? [gammaRow(startSec)] : [];
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address() as AddressInfo;
+  try {
+    await run(`http://127.0.0.1:${port}`, requested);
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+}
+
+test('discovery requests the grid-aligned slug for "now", not a search', async () => {
+  // 2024-01-01T00:07:43Z — 463s past midnight, not on a 5-minute boundary.
+  const now = Date.UTC(2024, 0, 1, 0, 7, 43);
+  const windowStart = Math.floor(now / 1000 / 300) * 300; // must floor to :05:00
+  await withGamma(new Set([windowStart, windowStart + 300]), async (url, requested) => {
+    const d = await discover(url, now);
+    assert.ok(requested.includes(`btc-updown-5m-${windowStart}`));
+    assert.ok(requested.includes(`btc-updown-5m-${windowStart + 300}`));
+    assert.equal(d.live?.slug, `btc-updown-5m-${windowStart}`);
+    assert.equal(d.live?.startMs, windowStart * 1000);
+    assert.equal(d.live?.endMs, (windowStart + 300) * 1000);
+    assert.equal(d.next?.slug, `btc-updown-5m-${windowStart + 300}`);
+  });
+});
+
+test('discovery trusts the slug for window boundaries, not the row', async () => {
+  // Even if Gamma's own date fields were missing or wrong, the slug is the
+  // one thing that cannot lie about which five minutes this market covers.
+  const now = Date.UTC(2024, 0, 1, 12, 0, 0);
+  const windowStart = Math.floor(now / 1000 / 300) * 300;
+  await withGamma(new Set([windowStart]), async (url) => {
+    const d = await discover(url, now);
+    assert.equal(d.live?.startMs, windowStart * 1000);
+    assert.equal(d.live?.endMs, windowStart * 1000 + 300_000);
+  });
+});
+
+test('a market outside its own window is reported in the right slot', async () => {
+  const now = Date.UTC(2024, 0, 1, 12, 0, 0);
+  const windowStart = Math.floor(now / 1000 / 300) * 300;
+  // Only the *next* window exists yet — the current one has not been created.
+  await withGamma(new Set([windowStart + 300]), async (url) => {
+    const d = await discover(url, now);
+    assert.equal(d.live, null);
+    assert.equal(d.next?.startMs, (windowStart + 300) * 1000);
+  });
+});
+
+test('falls back to a listing search when the grid produces nothing', async () => {
+  const now = Date.UTC(2024, 0, 1, 12, 0, 0);
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? '', 'http://x');
+    if (url.searchParams.has('slug')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('[]');
+      return;
+    }
+    // The listing fallback: one row shaped like a real 5-minute market.
+    const start = new Date(now);
+    const end = new Date(now + 300_000);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(
+      JSON.stringify([
+        {
+          id: 'fallback-1',
+          slug: 'bitcoin-up-or-down-fallback',
+          question: 'Bitcoin Up or Down',
+          startDate: start.toISOString(),
+          endDate: end.toISOString(),
+          outcomes: '["Up","Down"]',
+          clobTokenIds: '["u1","d1"]',
+          closed: false,
+        },
+      ])
+    );
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const d = await discover(`http://127.0.0.1:${port}`, now);
+    assert.equal(d.live?.id, 'fallback-1');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
 });
 
 // ── Config ──────────────────────────────────────────────────────────────────

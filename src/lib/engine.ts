@@ -203,8 +203,16 @@ export class Engine {
 
   private build(): Snapshot {
     const now = Date.now();
-    const up = this.market?.tokens.find((t) => t.side === 'UP');
-    const down = this.market?.tokens.find((t) => t.side === 'DOWN');
+    // While a window is active, its own market object is authoritative for
+    // which tokens the order book belongs to — never the loosely-synced
+    // `this.market` pointer, which exists to track the *next* window while
+    // waiting and can legitimately point elsewhere by the time a window is
+    // underway. Falling back to it only when there is no active cycle lets the
+    // book preview the upcoming market while waiting, without ever letting it
+    // drift from the window actually on screen once one has opened.
+    const forQuotes = this.cycle.market ?? this.market;
+    const up = forQuotes?.tokens.find((t) => t.side === 'UP');
+    const down = forQuotes?.tokens.find((t) => t.side === 'DOWN');
     const m = this.cycle.market;
 
     return {
@@ -334,7 +342,11 @@ export class Engine {
         if (this.market && this.cycle.market?.id !== this.market.id) {
           this.cycle = { ...idleCycle(), phase: 'waiting-for-window' };
           const wait = Math.max(0, (this.market.startMs - now) / 1000);
-          this.log('info', `Next window opens in ${wait.toFixed(0)}s — waiting for it to start`);
+          this.log(
+            'info',
+            `Next window opens in ${wait.toFixed(0)}s — waiting for it to start ` +
+              `(${this.market.slug || this.market.question || this.market.id})`
+          );
         }
       }
       this.emit();
@@ -648,7 +660,9 @@ export class Engine {
       return;
     }
 
-    const outcome: Side = close > c.barrier ? 'UP' : 'DOWN';
+    // Polymarket resolves UP on a tie (close >= open), not strictly greater —
+    // see the market's own rules.
+    const outcome: Side = close >= c.barrier ? 'UP' : 'DOWN';
     const move = close - c.barrier;
 
     for (const t of this.trades) {
