@@ -109,6 +109,8 @@ export class Engine {
   private rawPrice: number | null = null;
   /** Added to every Binance price. Re-levelled whenever a fresh Chainlink read arrives. */
   private offset = 0;
+  /** When the offset was last re-levelled against a genuine Chainlink read. */
+  private lastAnchorAt = 0;
   private priceAt = 0;
   private chainlinkGap: number | null = null;
   private chainlinkLive = false;
@@ -116,6 +118,8 @@ export class Engine {
   private vol = { sigma: 0, volPct: 0 };
 
   private market: Market | null = null;
+  /** Whatever window comes after `market`, refreshed on every poll — held ready for an instant handoff at settle. */
+  private nextMarket: Market | null = null;
   private books: Record<string, Book> = {};
   private cycle: Cycle = idleCycle('stopped');
 
@@ -347,6 +351,7 @@ export class Engine {
    * polling every second.
    */
   private applyChainlinkAnchor(chainlinkPrice: number): void {
+    this.lastAnchorAt = Date.now();
     if (this.rawPrice === null) return;
     const nextOffset = chainlinkPrice - this.rawPrice;
     const delta = nextOffset - this.offset;
@@ -372,6 +377,7 @@ export class Engine {
       };
 
       if (d.books) this.books = { ...this.books, ...d.books };
+      this.nextMarket = d.next;
 
       const now = Date.now();
 
@@ -447,59 +453,47 @@ export class Engine {
   }
 
   private begin(m: Market): void {
-    // Claim the slot synchronously: step() runs every 250ms and this.cycle
-    // .market must stop being null right away, or the async barrier capture
-    // below would let a second tick re-enter and start the window twice.
-    this.cycle = { ...idleCycle('tracking'), market: m };
-    this.emit(true);
-    void this.openWindow(m);
-  }
-
-  private async openWindow(m: Market): Promise<void> {
-    const captured = await this.captureBarrier();
-    if (this.cycle.market?.id !== m.id) return; // rolled over while we waited
-
-    if (!captured) {
-      this.log('warn', 'Window opened with no price available anywhere — sitting this one out');
-      return;
-    }
-
-    this.cycle = { ...this.cycle, barrier: captured.price, barrierSource: captured.source };
+    // Claim the slot and capture the barrier synchronously, right at the
+    // open — no awaiting, so there is no window during which the cycle sits
+    // blank while a fetch is in flight.
+    const captured = this.captureBarrier();
+    this.cycle = {
+      ...idleCycle('tracking'),
+      market: m,
+      barrier: captured?.price ?? null,
+      barrierSource: captured?.source ?? null,
+    };
     this.log(
-      'info',
-      `Window open. Barrier $${captured.price.toFixed(2)} (${barrierSourceLabel(captured.source)})`
+      captured ? 'info' : 'warn',
+      captured
+        ? `Window open. Barrier $${captured.price.toFixed(2)} (${barrierSourceLabel(captured.source)})`
+        : 'Window opened with no price available anywhere — sitting this one out'
     );
     this.emit(true);
   }
 
   /**
-   * The price to beat, fetched rather than guessed — in order of how directly
-   * each source reflects what Polymarket actually settles against:
+   * The price to beat, read synchronously off whatever we already have —
+   * never fetched fresh at the open, since that is exactly the delay that
+   * left the cycle blank right when a window starts. `this.price` is
+   * continuously re-anchored to Chainlink already (via `applyChainlinkAnchor`,
+   * fired by both the live relay and the on-chain fallback poll), so it is
+   * already the right number most of the time — this just picks the most
+   * direct source currently on hand and labels it honestly:
    *
-   *   1. Polymarket's own live relay of the Chainlink stream. This is as
-   *      direct as it gets without commercial Data Streams credentials: it is
-   *      Polymarket's own feed of the exact series these markets resolve on.
-   *   2. The free on-chain Chainlink aggregator — the same asset, independently
-   *      read, but far slower to update.
-   *   3. Our own Binance-derived tape, continuously anchored to whichever of
-   *      the above last reported. Used only if neither responds in time, and
-   *      always labelled as the fallback that it is.
+   *   1. Polymarket's own live relay of the Chainlink stream, if a tick has
+   *      landed in the last 5s — as direct as it gets without commercial
+   *      Data Streams credentials.
+   *   2. `this.price`, labelled by how recently it was last anchored to a
+   *      genuine Chainlink read (the relay or the 30s on-chain poll) versus
+   *      running pure Binance since.
    */
-  private async captureBarrier(): Promise<{ price: number; source: BarrierSource } | null> {
+  private captureBarrier(): { price: number; source: BarrierSource } | null {
     const live = this.chainlinkFeed.latest();
     if (live) return { price: live.p, source: 'polymarket-live' };
-
-    try {
-      const res = await fetch('/api/chainlink', { headers: this.headers(), cache: 'no-store' });
-      if (res.ok) {
-        const d = (await res.json()) as { price?: number | null };
-        if (d.price) return { price: d.price, source: 'polymarket-onchain' };
-      }
-    } catch {
-      /* fall through to the last resort */
-    }
-
-    return this.price !== null ? { price: this.price, source: 'binance' } : null;
+    if (this.price === null) return null;
+    const anchored = Date.now() - this.lastAnchorAt < 45_000;
+    return { price: this.price, source: anchored ? 'polymarket-onchain' : 'binance' };
   }
 
   /** Re-simulate from the price now, once a second, until the window closes. */
@@ -709,7 +703,20 @@ export class Engine {
     }
 
     this.cycle = idleCycle('waiting-for-window');
-    this.market = null; // force a fresh look for the next window
+    // Hand off directly to the window already pre-fetched by pollMarket —
+    // windows are back-to-back, so this is normally ready to open right now,
+    // with no rediscovery gap. Only falls back to null (a fresh poll within
+    // 3s) if discovery genuinely hasn't caught up.
+    this.market = this.nextMarket;
+    this.nextMarket = null;
+    if (this.market) {
+      const wait = Math.max(0, (this.market.startMs - Date.now()) / 1000);
+      this.log(
+        'info',
+        `Next window opens in ${wait.toFixed(0)}s — waiting for it to start ` +
+          `(${this.market.slug || this.market.question || this.market.id})`
+      );
+    }
     this.emit(true);
   }
 
