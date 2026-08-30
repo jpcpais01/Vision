@@ -44,18 +44,31 @@ interface RtdsMessage {
 export interface ChainlinkFeedOptions {
   onTick: (tick: Tick) => void;
   onStatus: (connected: boolean) => void;
+  /**
+   * Fires a handful of times (never spammed) when something worth seeing
+   * happens that isn't a clean tick: the socket opened but nothing valid
+   * arrived within a while, or a message came in that didn't match the
+   * expected shape. This is the only way to actually diagnose a silently
+   * wrong topic/filter/shape from a deployment this sandbox can't reach.
+   */
+  onDebug?: (msg: string) => void;
 }
+
+const SILENT_WARNING_MS = 8000;
+const MAX_DEBUG_LOGS = 5;
 
 export class ChainlinkFeed {
   private ws: WebSocket | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private silentTimer: ReturnType<typeof setTimeout> | null = null;
   private attempt = 0;
   private running = false;
   private connected = false;
   private lastTick: Tick | null = null;
   /** True once a single well-formed price update has ever arrived. */
   private everConnected = false;
+  private debugLogsLeft = MAX_DEBUG_LOGS;
 
   constructor(private opts: ChainlinkFeedOptions) {}
 
@@ -81,9 +94,19 @@ export class ChainlinkFeed {
   }
 
   private emitTick(tick: Tick): void {
+    if (this.silentTimer) {
+      clearTimeout(this.silentTimer);
+      this.silentTimer = null;
+    }
     this.lastTick = tick;
     this.everConnected = true;
     this.opts.onTick(tick);
+  }
+
+  private debug(msg: string): void {
+    if (this.debugLogsLeft <= 0) return;
+    this.debugLogsLeft--;
+    this.opts.onDebug?.(msg);
   }
 
   private setConnected(v: boolean): void {
@@ -97,6 +120,8 @@ export class ChainlinkFeed {
     this.pingTimer = null;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    if (this.silentTimer) clearTimeout(this.silentTimer);
+    this.silentTimer = null;
     if (this.ws) {
       this.ws.onopen = null;
       this.ws.onmessage = null;
@@ -133,19 +158,41 @@ export class ChainlinkFeed {
         this.pingTimer = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) ws.send('ping');
         }, PING_MS);
+
+        // The socket opening only proves the handshake worked, not that the
+        // subscription was understood — if nothing valid arrives shortly
+        // after, that's the "silently wrong topic/filter" failure mode.
+        this.silentTimer = setTimeout(() => {
+          this.debug(
+            this.lastTick
+              ? `No new tick in ${SILENT_WARNING_MS / 1000}s — connected, but the relay has gone quiet`
+              : `Connected ${SILENT_WARNING_MS / 1000}s ago with zero ticks received — the subscription may not be matching anything`
+          );
+        }, SILENT_WARNING_MS);
       };
 
       ws.onmessage = (event) => {
-        if (typeof event.data !== 'string' || event.data === 'pong') return;
+        if (typeof event.data !== 'string') {
+          this.debug(`Non-text frame received (${typeof event.data})`);
+          return;
+        }
+        if (event.data === 'pong') return;
         let parsed: RtdsMessage;
         try {
           parsed = JSON.parse(event.data) as RtdsMessage;
         } catch {
-          return; // a stray non-JSON frame (e.g. a text pong) — not fatal
+          this.debug(`Non-JSON text frame: ${event.data.slice(0, 200)}`);
+          return;
         }
         const p = parsed.payload;
-        if (!p) return;
-        if (p.symbol && p.symbol !== SYMBOL) return;
+        if (!p) {
+          this.debug(`Message with no payload: ${event.data.slice(0, 300)}`);
+          return;
+        }
+        if (p.symbol && p.symbol !== SYMBOL) {
+          this.debug(`Payload for a different symbol ("${p.symbol}"), expected "${SYMBOL}"`);
+          return;
+        }
 
         if (Array.isArray(p.data)) {
           // The initial snapshot after subscribing — ingest every point so
@@ -158,7 +205,10 @@ export class ChainlinkFeed {
           return;
         }
 
-        if (typeof p.value !== 'number' || !(p.value > 0)) return;
+        if (typeof p.value !== 'number' || !(p.value > 0)) {
+          this.debug(`Payload with no usable "value": ${event.data.slice(0, 300)}`);
+          return;
+        }
         this.emitTick({ t: typeof p.timestamp === 'number' ? p.timestamp : Date.now(), p: p.value });
       };
 

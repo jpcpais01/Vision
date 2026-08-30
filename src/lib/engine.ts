@@ -151,6 +151,7 @@ export class Engine {
         if (connected) this.log('info', 'Connected to Polymarket’s live Chainlink relay');
         this.emit();
       },
+      onDebug: (msg) => this.log('warn', `Chainlink relay: ${msg}`),
     });
   }
 
