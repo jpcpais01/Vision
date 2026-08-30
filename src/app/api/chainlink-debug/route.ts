@@ -1,4 +1,4 @@
-import WebSocket from 'ws';
+import WebSocket, { RawData } from 'ws';
 import { handler, ok } from '@/lib/api';
 
 export const runtime = 'nodejs';
@@ -7,25 +7,36 @@ export const dynamic = 'force-dynamic';
 /**
  * A one-shot diagnostic, not part of the trading engine's own path.
  *
- * Round 1 tested whether the server gates on the WebSocket handshake's
- * `Origin` header — it doesn't: both a spoofed `https://polymarket.com`
- * origin and no override at all connected, subscribed, and then received
- * zero messages. Origin is not the variable.
+ * Round 1 ruled out the WebSocket handshake's `Origin` header as a gate.
+ * Round 2 ruled out topic choice (`crypto_prices_chainlink` vs the plainer
+ * `crypto_prices`) — both subscribe cleanly and both then receive zero
+ * messages within 7s.
  *
- * Round 2: is it specifically the `crypto_prices_chainlink` topic that's
- * gated — Polymarket's own exact settlement source, plausibly held back
- * from public broadcast even though the plainer `crypto_prices` topic
- * (documented right alongside it) might be open. Subscribes to both, side
- * by side, to find out whether the WebSocket mechanism works at all here.
+ * Round 3: is "zero messages" actually true, or is it "zero *text* frames"?
+ * The `ws` package's `message` event carries an `isBinary` flag, and the
+ * official Polymarket client only ever checks `typeof data === "string"` —
+ * if the server ever answers with a binary frame (compression negotiation,
+ * a different content-type on this route, anything), both our code and
+ * their own reference client would silently treat it as nothing. This
+ * captures frame type and raw bytes directly, and waits longer in case the
+ * first tick is just slow to arrive rather than never arriving.
  */
 
 const URL = 'wss://ws-live-data.polymarket.com';
-const TIMEOUT_MS = 7000;
+const TIMEOUT_MS = 20000;
+
+interface Frame {
+  atMs: number;
+  isBinary: boolean;
+  byteLength: number;
+  hex: string;
+  text: string;
+}
 
 interface Attempt {
   label: string;
   opened: boolean;
-  messages: string[];
+  frames: Frame[];
   error: string | null;
   closedCode: number | null;
   closedReason: string | null;
@@ -33,10 +44,11 @@ interface Attempt {
 
 function tryConnect(label: string, topic: string): Promise<Attempt> {
   return new Promise((resolve) => {
+    const start = Date.now();
     const result: Attempt = {
       label,
       opened: false,
-      messages: [],
+      frames: [],
       error: null,
       closedCode: null,
       closedReason: null,
@@ -66,9 +78,16 @@ function tryConnect(label: string, topic: string): Promise<Attempt> {
         })
       );
     });
-    ws.on('message', (data) => {
-      result.messages.push(String(data).slice(0, 200));
-      if (result.messages.length >= 3) finish();
+    ws.on('message', (data: RawData, isBinary: boolean) => {
+      const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+      result.frames.push({
+        atMs: Date.now() - start,
+        isBinary,
+        byteLength: buf.length,
+        hex: buf.subarray(0, 64).toString('hex'),
+        text: buf.subarray(0, 200).toString('utf8'),
+      });
+      if (result.frames.length >= 5) finish();
     });
     ws.on('error', (err) => {
       result.error = err instanceof Error ? err.message : String(err);
