@@ -17,12 +17,12 @@ minutes than it is right now? Vision plays one cycle per window.
 2. **Wait for a fresh window.** Once calibrated, it never joins a window
    already in progress — the whole bet is measured against the price at the
    open, and joining late means guessing that number.
-3. **Fetch the barrier — never guess it.** At the open, the price to beat is
-   the freshest genuine price already on hand — Binance's live trade stream
-   when connected, CoinGecko's cross-exchange index otherwise (see "About the
-   price feed" below) — never a separate fetch, never anything else. If
-   there is no price yet, the window is sat out rather than trading on a
-   guess.
+3. **Fetch the barrier — never guess it.** At the open, the barrier is
+   captured from the most exact source that answers (see "About the price
+   feed" below): Polymarket's own live Chainlink relay first, the on-chain
+   Chainlink read behind it, and only the running display feed
+   (Binance/CoinGecko) as an absolute last resort. If there is no price
+   at all, the window is sat out rather than trading on a guess.
 4. **Run the only model there is.** A driftless Monte Carlo: `paths` random
    walks are simulated forward from the *current* price, using the plain
    average realised volatility of the last 10 15-second candles, for however
@@ -34,55 +34,60 @@ minutes than it is right now? Vision plays one cycle per window.
    the market is charging for it by more than the configured minimum edge, it
    buys that side. There is no pinned direction — either side can trade, and
    which one wins is decided fresh each time.
-6. **Settle at the close** and record the window, traded or not.
+6. **Settle at the close.** The close is captured the same exacting way as
+   the barrier — Polymarket's exact settlement source first — since a $1–2
+   discrepancy there could flip a recorded win/loss relative to what
+   Polymarket itself resolved. Recorded either way, traded or not.
 
 ## About the price feed
 
+This app uses two *different* feeds for two *different* jobs, because they
+have opposite requirements.
+
+**The barrier and the close decide win or loss, so they have to be exact.**
 Polymarket settles these markets on **Chainlink Data Streams BTC/USD**, and
 Chainlink does not offer that stream for free — it needs commercial
-credentials. Two free alternatives were tried and dropped before landing
-here, both for the same reason: they turned out not to be reachable from a
-real deployment, not just from this development sandbox.
+credentials. Polymarket itself runs a public Real-Time Data Service that
+relays that exact stream, with no key and no auth, specifically so people
+can see the same price the markets resolve against — this is as close to
+"exactly what Polymarket uses" as a free integration gets. Behind it sits
+the free on-chain Chainlink aggregator (the same asset, independently read,
+but far slower to update) as a fallback for the rare moment the relay has
+gone quiet. Both are consulted only at the two instants that actually
+matter — the barrier at open, the close at settlement (`Engine.captureExact`
+in `src/lib/engine.ts`) — never for the running display, and every window's
+history records exactly which of the two answered (`barrierSource`,
+`closeSource`), so a fallback is always visible, never silent.
 
-- **Polymarket's own Real-Time Data Service** (a public WebSocket relay of
-  the Chainlink stream) never delivered usable live updates in practice.
-- **Pyth Network's free Hermes service** looked right — endpoint, price feed
-  id and response shape were all confirmed against Pyth's own source on
-  GitHub — but its public gateway returned `Unauthorized` on every request
-  once actually deployed, for reasons that could not be diagnosed without
-  network access to it.
+**The running display in between just needs to be smooth and free**, since
+it never decides an outcome by itself — it only drives what you watch tick
+and the volatility estimate the simulation trades on. Binance's public
+trade stream (`wss://stream.binance.com:9443/ws/btcusdt@trade`) is the
+primary source there — one exchange's own tape, not a cross-exchange
+aggregate, but genuinely continuous and free — with CoinGecko's
+cross-exchange index (`https://api.coingecko.com/api/v3/simple/price`)
+polled every 2s as its fallback.
 
-CoinGecko was tried next as the sole source and it does work reliably, but
-its public index itself only refreshes its cached value roughly every
-30–60 seconds — polling it faster than that just re-reads the same number,
-so the price sat visibly still between real changes even though it was
-correctly connected.
+Two free alternatives were tried for the *exact* side before this design and
+dropped, both for the same reason — not reachable from a real deployment,
+not just from this development sandbox — which is exactly why this now
+tries Polymarket's own relay first but never *only* relies on it: **Pyth
+Network's free Hermes service** looked right (endpoint, price feed id and
+response shape all confirmed against Pyth's own source on GitHub) but its
+public gateway returned `Unauthorized` on every request once actually
+deployed, for reasons that could not be diagnosed without network access to
+it; and a **CoinGecko-only** design worked but its public index refreshes
+its own cached value only every 30–60s, too coarse to be the exact side of
+anything.
 
-So this now uses two sources together, in the same live-feed-plus-fallback
-shape as every other layer of this app:
-
-- **Binance's public trade stream** (`wss://stream.binance.com:9443/ws/btcusdt@trade`)
-  — free, no key, genuinely continuous, sub-second updates. This is one
-  exchange's own tape, not a cross-exchange aggregate, but it is the only
-  free way to get real second-to-second movement. Primary source whenever
-  connected.
-- **CoinGecko's index** (`https://api.coingecko.com/api/v3/simple/price`) —
-  the cross-exchange aggregate from above, polled every 2 seconds. Only
-  actually used when Binance's stream has nothing fresh; never blended or
-  averaged with it.
-
-Both feed the same tape (`src/lib/binanceFeed.ts`, `src/lib/coingecko.ts`) —
-the barrier, the live price on screen, and the volatility/chart data all
-come from whichever of the two answered most recently, and every window's
-history records which one it actually was (`barrierSource`), so a fallback
-is always visible, never silent. CoinGecko works with no key at a low rate
-limit; setting `COINGECKO_API_KEY` (a free Demo key from coingecko.com, no
-payment) raises the limit.
-
-> Both feeds' endpoints, message shapes, and (for CoinGecko) the
-> `x-cg-demo-api-key` header are taken directly from Binance's own
-> `binance-spot-api-docs` and CoinGecko's own `coingecko-typescript` client
-> source on GitHub — not guessed.
+> Every endpoint, message shape, and header here — Polymarket's RTDS relay,
+> the on-chain Chainlink call, Binance's trade stream, CoinGecko's
+> `x-cg-demo-api-key` header — is taken directly from each provider's own
+> source on GitHub, not guessed. What is not independently exercised from
+> this development sandbox (no route to `polymarket.com` here) is whether
+> Polymarket's relay actually stays connected in a real deployment; the
+> on-chain fallback means the exact side keeps working, just slower to
+> update, even if it doesn't.
 
 ## Setup
 
@@ -106,6 +111,7 @@ Every one of these is optional for paper trading.
 | `POLYMARKET_PRIVATE_KEY` | live only | Polygon key holding USDC.e. |
 | `ALLOW_LIVE_TRADING` | live only | Must be exactly `true`. Live orders are refused otherwise, whatever the UI says. |
 | `COINGECKO_API_KEY` | recommended | Free Demo key from coingecko.com — raises the rate limit enough for 2s polling. Works without it, just slower and more likely to be throttled. |
+| `CHAINLINK_RPC_URL` | no | Any Ethereum RPC, for the on-chain fallback behind the barrier/close. |
 
 Deploy: push, import at [vercel.com/new](https://vercel.com/new), add the
 variables you want, done. No build configuration needed.
@@ -141,8 +147,10 @@ Five things, all on sliders, plus the mode:
 
 ```
 src/lib/
-  binanceFeed.ts     the live price (browser WebSocket)
-  coingecko.ts       the fallback price (BTC/USD index)
+  chainlinkFeed.ts   the exact source — Polymarket's live relay (browser WebSocket)
+  chainlink.ts       the exact source's fallback — on-chain Chainlink read
+  binanceFeed.ts     the running display (browser WebSocket)
+  coingecko.ts       the running display's fallback (BTC/USD index)
   market.ts          finding the live 5-minute market
   book.ts            order book maths, and the paper fill model
   clob.ts            Polymarket reads
@@ -174,15 +182,16 @@ fields would have produced the wrong window).
 
 - **The tab must stay open.** The loop runs in the browser. Closing it stops
   trading, which is the safer default anyway.
-- **The price is Binance's own tape, not Chainlink Data Streams.** Polymarket
-  settles on the latter, which needs paid credentials to read for free.
-  Binance tracks the same asset closely but is one exchange's price, not a
-  cross-exchange aggregate, and is not guaranteed to agree to the cent at
-  the boundary of a very close window.
-- **If Binance's stream never connects in a deployment**, the tape falls
-  back to CoinGecko's cross-exchange index polled every 2s — accurate, but
-  its own underlying value only actually changes roughly every 30–60s, so
-  the price can sit visibly still between real moves in that mode.
+- **Polymarket's own relay's real-world reliability is unverified from this
+  sandbox** (no route to `polymarket.com` here). Check the "Chainlink"
+  status badge in a real deployment — if it stays offline and the on-chain
+  fallback is slow to answer too, the barrier/close capture (not the
+  display) will be slower than instant, though never wrong.
+- **If neither Chainlink source answers at all** (both the relay and the
+  on-chain fallback), the barrier or close falls back to the running
+  display feed (Binance/CoinGecko) as a last resort rather than sitting the
+  window out — labelled honestly (`barrierSource`/`closeSource`), but at
+  that point no longer Polymarket's exact number.
 - **The edge may not exist.** A five-minute Bitcoin binary is close to a coin
   flip and Polymarket's book is not naive. Run paper mode until the numbers say
   something before risking real money.

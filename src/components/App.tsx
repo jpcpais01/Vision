@@ -58,7 +58,15 @@ export default function App() {
 
         <span
           className="flex items-center gap-1.5 text-xs text-[var(--muted)]"
-          title="Binance's live trade stream — real second-to-second BTC/USD movement"
+          title="Polymarket's own live Chainlink relay — the exact source it settles on. Used only for the barrier and the close."
+        >
+          <span className={cx('h-1.5 w-1.5 rounded-full', s.chainlinkLive ? 'bg-[var(--up)]' : 'bg-[var(--line)]')} />
+          Chainlink {s.chainlinkLive ? 'live' : 'offline'}
+        </span>
+
+        <span
+          className="flex items-center gap-1.5 text-xs text-[var(--muted)]"
+          title="Binance's live trade stream — the running display, not the barrier or close"
         >
           <span className={cx('h-1.5 w-1.5 rounded-full', s.binanceLive ? 'bg-[var(--up)]' : 'bg-[var(--line)]')} />
           Binance {s.binanceLive ? 'live' : 'offline'}
@@ -191,7 +199,7 @@ export default function App() {
             Press <strong className="text-[var(--text)]">Start</strong> and it spends
             {' '}{CALIBRATION_MIN_SEC / 60} minute{CALIBRATION_MIN_SEC === 60 ? '' : 's'} gathering real price data, then waits for the
             next 5-minute window to open — it never joins one already running. The barrier is
-            the freshest genuine price on hand at the open, never guessed, and a driftless
+            read from Polymarket’s own settlement source, never guessed, and a driftless
             Monte Carlo simulation re-checks the odds against the live price every second. It
             buys only when that beats the market’s own price by enough to be worth it.
           </p>
@@ -278,6 +286,12 @@ export default function App() {
               <div
                 key={w.id}
                 className="flex items-center gap-3 border-b border-[var(--line)] px-5 py-2.5 text-sm last:border-0"
+                title={
+                  w.close !== null
+                    ? `${usd(w.barrier)} (${barrierSourceLabel(w.barrierSource)}) → ${usd(w.close)}` +
+                      (w.closeSource ? ` (${barrierSourceLabel(w.closeSource)})` : '')
+                    : undefined
+                }
               >
                 <span className="num w-16 shrink-0 text-xs text-[var(--muted)]">
                   {time(w.startMs)}
@@ -353,12 +367,13 @@ export default function App() {
       </section>
 
       <p className="px-1 text-center text-xs leading-relaxed text-[var(--muted)]">
-        Live prices come from Binance’s trade stream — real second-to-second BTC/USD movement,
-        continuously, for free. If that stream ever drops, CoinGecko’s cross-exchange index fills
-        in until it reconnects. Polymarket itself settles on Chainlink Data Streams, which needs
-        paid credentials to read directly. There is no forecasting model —
-        only a driftless Monte Carlo over realised volatility. Paper mode simulates fills against
-        the real order book. Not financial advice.
+        The barrier and the close — the two numbers that decide win or loss — are read from
+        Polymarket’s own live Chainlink relay whenever it’s connected, the exact source these
+        markets settle on, falling back to the on-chain Chainlink read only when it isn’t. The
+        running display in between comes from Binance’s trade stream, CoinGecko filling in if that
+        drops — smooth, but never what a window is actually judged against. There is no
+        forecasting model — only a driftless Monte Carlo over realised volatility. Paper mode
+        simulates fills against the real order book. Not financial advice.
       </p>
 
       {showSettings ? (
@@ -405,7 +420,16 @@ function SideRead({
 }
 
 function barrierSourceLabel(s: BarrierSource): string {
-  return s === 'binance' ? "Binance's live stream" : 'CoinGecko';
+  switch (s) {
+    case 'chainlink-live':
+      return "Polymarket's live relay";
+    case 'chainlink-onchain':
+      return 'on-chain Chainlink';
+    case 'binance':
+      return "Binance's live stream";
+    default:
+      return 'CoinGecko';
+  }
 }
 
 function phaseLabel(s: ReturnType<typeof useEngine>['snapshot']): string {

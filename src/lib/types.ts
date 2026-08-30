@@ -98,8 +98,14 @@ export interface Trade {
   error?: string;
 }
 
-/** Where a captured barrier came from, most trustworthy (freshest) first. Always a genuine read — never approximated. */
-export type BarrierSource = 'binance' | 'coingecko';
+/**
+ * Where a captured price came from, most trustworthy (closest to what
+ * Polymarket itself settles on) first. Always a genuine read — never
+ * approximated. The first two are Polymarket's own settlement source
+ * (Chainlink), consulted only for the barrier and the settlement close —
+ * never for the continuous display tape, which is `binance`/`coingecko`.
+ */
+export type BarrierSource = 'chainlink-live' | 'chainlink-onchain' | 'binance' | 'coingecko';
 
 /** One completed 5-minute window, traded or not. */
 export interface WindowRecord {
@@ -111,6 +117,7 @@ export interface WindowRecord {
   barrier: number;
   barrierSource: BarrierSource;
   close: number | null;
+  closeSource: BarrierSource | null;
   outcome: Side | null;
   /** The simulation's final read of P(UP), for calibration tracking. */
   finalPUp: number | null;

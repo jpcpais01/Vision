@@ -165,6 +165,7 @@ const EMPTY: Snapshot = {
   priceAt: 0,
   priceSource: null,
   binanceLive: false,
+  chainlinkLive: false,
   ticks: [],
   volPct: null,
   cycle: {
