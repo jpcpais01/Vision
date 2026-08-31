@@ -68,6 +68,10 @@ export interface BotSnapshot extends MarketSnapshot {
   /** This bot's own tail probability, from its own distribution. */
   tailProb: number | null;
   band: Band[] | null;
+  /** The fixed 10%-tail band, regardless of this bot's own configured
+   *  threshold — the fixed yardstick the win-animation overlays measure a
+   *  favorable move against, so it doesn't shift if `unlikeliness` does. */
+  band10: Band[] | null;
   skipReason: string | null;
   busy: Busy;
   position: Position | null;
@@ -276,6 +280,7 @@ export class Engine {
       cycleStartPrice: this.cycleStartPrice,
       elapsedSec: this.cycleStart !== null ? (now - this.cycleStart) / 1000 : null,
       band: bot.dist ? bandFromDistribution(bot.dist, bot.config.unlikeliness) : null,
+      band10: bot.dist ? bandFromDistribution(bot.dist, 0.1) : null,
       tailProb: bot.tailProb,
       skipReason: bot.skipReason,
       busy: bot.busy,
@@ -668,6 +673,7 @@ export function emptySnapshot(strategyId: StrategyId): BotSnapshot {
       cycleStartPrice: null,
       elapsedSec: null,
       band: null,
+      band10: null,
       tailProb: null,
       skipReason: null,
       busy: null,

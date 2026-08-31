@@ -114,6 +114,136 @@ body {
   mix-blend-mode: overlay;
 }
 
+/* ── Win-animation overlays ──────────────────────────────────────────────
+   Fired from StrategyDashboard when an open position's favorable move
+   crosses a multiple of the fixed 10%-tail distance — see WinFX.tsx. Pure
+   CSS, no library: a scale-in label, a brief colour flash behind it, and
+   (amazing only) a spark burst plus a one-shot screen shake on the chart
+   itself.
+   ───────────────────────────────────────────────────────────────────────── */
+@keyframes winfx-pop {
+  0% {
+    transform: scale(0.35) rotate(-3deg);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.15) rotate(1deg);
+    opacity: 1;
+  }
+  70% {
+    transform: scale(0.98) rotate(0deg);
+  }
+  85% {
+    transform: scale(1.03);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+@keyframes winfx-flash {
+  0% {
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes winfx-spark {
+  0% {
+    transform: rotate(var(--angle)) translateY(0) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: rotate(var(--angle)) translateY(-120px) scale(0);
+    opacity: 0;
+  }
+}
+@keyframes winfx-shake {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  20% {
+    transform: translate(-4px, 3px);
+  }
+  40% {
+    transform: translate(4px, -3px);
+  }
+  60% {
+    transform: translate(-3px, -2px);
+  }
+  80% {
+    transform: translate(3px, 2px);
+  }
+}
+
+.winfx-shake {
+  animation: winfx-shake 0.4s ease-in-out 1;
+}
+
+.winfx-label {
+  font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  text-align: center;
+  animation: winfx-pop ease forwards;
+  white-space: nowrap;
+}
+.winfx-big .winfx-label {
+  font-size: 22px;
+  color: #f5c04d;
+  text-shadow: 0 0 16px rgba(245, 192, 77, 0.7);
+  animation-duration: 1.3s;
+}
+.winfx-great .winfx-label {
+  font-size: 32px;
+  color: #35e08a;
+  text-shadow: 0 0 22px rgba(53, 224, 138, 0.8);
+  animation-duration: 1.7s;
+}
+.winfx-amazing .winfx-label {
+  font-size: 42px;
+  color: #4fd6ff;
+  text-shadow: 0 0 28px rgba(79, 214, 255, 0.9), 0 0 56px rgba(79, 214, 255, 0.5);
+  animation-duration: 2.1s;
+}
+
+.winfx-flash {
+  position: absolute;
+  inset: 0;
+  animation: winfx-flash ease forwards;
+}
+.winfx-big .winfx-flash {
+  background: radial-gradient(circle, rgba(245, 192, 77, 0.28), transparent 70%);
+  animation-duration: 1.1s;
+}
+.winfx-great .winfx-flash {
+  background: radial-gradient(circle, rgba(53, 224, 138, 0.3), transparent 70%);
+  animation-duration: 1.4s;
+}
+.winfx-amazing .winfx-flash {
+  background: radial-gradient(circle, rgba(79, 214, 255, 0.35), transparent 70%);
+  animation-duration: 1.8s;
+}
+
+.winfx-spark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: #4fd6ff;
+  box-shadow: 0 0 10px #4fd6ff;
+  animation: winfx-spark 1s ease-out forwards;
+}
+
 @layer components {
   .card {
     background: var(--card);

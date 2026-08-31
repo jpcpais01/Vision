@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useBot } from '@/hooks/useBot';
 import { useEngineContext } from '@/components/EngineProvider';
 import { CYCLE_SEC, PATHS } from '@/lib/config';
@@ -8,6 +8,8 @@ import { strategyDef } from '@/lib/strategies';
 import { CycleChart } from '@/components/Charts';
 import { Settings } from '@/components/Settings';
 import { HistoryPanel } from '@/components/HistoryPanel';
+import { WinFX, type WinFxEvent } from '@/components/WinFX';
+import { playWinSound, type WinTier } from '@/lib/sound';
 import { clock, cx, pct, signed, usd } from '@/lib/format';
 import type { Busy } from '@/lib/engine';
 import type { Position, StrategyId } from '@/lib/types';
@@ -38,6 +40,40 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
   const secondsToRoll = s.elapsedSec !== null ? Math.max(0, CYCLE_SEC - s.elapsedSec) : null;
   const signalNow = s.tailProb !== null && s.tailProb < config.unlikeliness;
 
+  // Win-animation overlays: d is the distance from this cycle's start price
+  // to the fixed 10%-tail price at the current second — a fixed yardstick
+  // for "an unlikely move," regardless of this bot's own configured
+  // threshold. Once the position's own favorable move clears 0.5x / 1x / 2x
+  // of that, fire the matching tier — each position's own high-water mark,
+  // so a tier fires once per position and only on the way up.
+  const [fx, setFx] = useState<WinFxEvent | null>(null);
+  const tierRef = useRef<{ posId: string | null; highest: number }>({ posId: null, highest: 0 });
+  useEffect(() => {
+    const pos = s.position;
+    if (!pos) {
+      tierRef.current = { posId: null, highest: 0 };
+      return;
+    }
+    if (tierRef.current.posId !== pos.id) tierRef.current = { posId: pos.id, highest: 0 };
+    if (s.price === null || s.cycleStartPrice === null || s.elapsedSec === null || !s.band10?.length) return;
+
+    const idx = Math.min(s.band10.length, Math.max(1, Math.round(s.elapsedSec))) - 1;
+    const b = s.band10[idx];
+    const d = pos.direction === 'LONG' ? b.hi - s.cycleStartPrice : s.cycleStartPrice - b.lo;
+    if (!(d > 0)) return;
+
+    const favorable = pos.direction === 'LONG' ? s.price - pos.openPrice : pos.openPrice - s.price;
+    const ratio = favorable / d;
+    const tier = ratio >= 2 ? 3 : ratio >= 1 ? 2 : ratio >= 0.5 ? 1 : 0;
+
+    if (tier > tierRef.current.highest) {
+      tierRef.current.highest = tier;
+      const name: WinTier = tier === 3 ? 'amazing' : tier === 2 ? 'great' : 'big';
+      setFx({ tier: name, key: Date.now() });
+      playWinSound(name);
+    }
+  }, [s.position, s.price, s.cycleStartPrice, s.elapsedSec, s.band10]);
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
       {/* ── Top strip ───────────────────────────────────────── */}
@@ -62,7 +98,7 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
 
       {/* ── The chart — the star, full bleed, its own always-dark screen ── */}
       <div
-        className="relative min-h-0 flex-1 overflow-hidden rounded-2xl"
+        className={cx('relative min-h-0 flex-1 overflow-hidden rounded-2xl', fx?.tier === 'amazing' && 'winfx-shake')}
         style={{ background: '#05070a', color: '#9fb0c9' }}
       >
         {s.running ? (
@@ -75,6 +111,8 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
               closeAtSecond={config.closeAtSecond}
               position={s.position}
             />
+
+            <WinFX fx={fx} onDone={() => setFx(null)} />
 
             {/* HUD overlays — game-style corner readouts on the screen itself */}
             <div className="pointer-events-none absolute left-3 top-2.5 flex flex-col items-start gap-2">

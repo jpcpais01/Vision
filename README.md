@@ -122,6 +122,18 @@ directly on that screen instead of separate stacked cards, arcade-style.
 Trade history and the activity log live behind one **History** button
 instead of taking up permanent space on the page.
 
+**Win animations.** While a position is open, its live favorable move is
+compared against a fixed yardstick: the distance from the cycle's start
+price to the fixed 10%-tail price at that exact second — a fixed measure of
+"an unlikely move," independent of whatever threshold the bot's own
+**Flag when probability drops below** setting happens to be set to. Clearing
+0.5x of that distance pops a small **Big win** banner; 1x, a bigger **Great
+win**; 2x, the full **Amazing win** — flash, spark burst, a one-shot screen
+shake on the chart, and an ascending synthesized chime for each tier (no
+audio files shipped; the jingles are plain oscillators — see
+`src/lib/sound.ts`). Each tier fires once per position, only on the way up.
+Sound needs one browser gesture to unlock — pressing **Start** does it.
+
 ## Setup
 
 ```bash
@@ -217,6 +229,7 @@ src/lib/
   montecarlo.ts          the driftless Monte Carlo — full-cycle path simulation, run once per bot per cycle
   engine.ts               the 60-second cycle loop; one shared reference price, one simulation per bot
   store.ts                 per-bot position and cycle history
+  sound.ts                 synthesized win-tier jingles — oscillators, no audio files
 src/app/
   [strategy]/            one route per bot — /reversion, /momentum
   api/config/[strategy]/  api/state/[strategy]/  — per-bot config and history, access control only;
@@ -229,6 +242,7 @@ src/components/
   Charts.tsx              the price line against the simulated probability cone, full bleed
   HistoryPanel.tsx        positions and the activity log, tabbed, behind one button
   Settings.tsx            the seven per-bot settings, as a modal
+  WinFX.tsx               the win-tier celebration overlay drawn on the chart
 ```
 
 ## Tests

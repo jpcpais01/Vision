@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { Engine } from '@/lib/engine';
 import { sanitize } from '@/lib/config';
+import { primeSound } from '@/lib/sound';
 import { STRATEGIES } from '@/lib/strategies';
 import type { Config, CycleRecord, Position, StrategyId } from '@/lib/types';
 
@@ -164,7 +165,10 @@ export function EngineProvider({ children }: { children: React.ReactNode }) {
     needsToken,
     token,
     setToken,
-    start: () => void engine?.start(),
+    start: () => {
+      primeSound(); // must happen inside this click's own call stack, or the browser blocks audio later
+      void engine?.start();
+    },
     stop: () => engine?.stop(),
     update,
     kill,
