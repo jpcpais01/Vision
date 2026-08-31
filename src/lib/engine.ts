@@ -1,8 +1,8 @@
-import type { Book, Config, CycleRecord, Direction, LogLine, Position, Stats, Tick } from './types';
-import { CYCLE_SEC, DEFAULT_CONFIG, HISTORY_SEC, PATHS } from './config';
+import type { Config, CycleRecord, Direction, LogLine, Position, Stats, Tick } from './types';
+import { CYCLE_SEC, DEFAULT_CONFIG, HISTORY_SEC, PATHS, SYMBOL } from './config';
 import { volatility } from './series';
 import { bandFromDistribution, simulateCycle, tailProbability, type Band, type CycleDistribution } from './montecarlo';
-import { fillQty, fillUsd } from './binanceBook';
+import { fetchBook, fillQty, fillUsd } from './binanceBook';
 import { BinanceFeed } from './binanceFeed';
 
 /**
@@ -246,17 +246,23 @@ export class Engine {
     this.vol = volatility(this.seconds.slice(-HISTORY_SEC));
   }
 
-  /** REST fallback, skipped entirely while the WebSocket has a tick from the last 5s. */
+  /**
+   * REST fallback, skipped entirely while the WebSocket has a tick from the
+   * last 5s. Fetched directly from the browser — Binance's REST API 451s
+   * requests from US-based server IPs, so this cannot go through our own
+   * /api routes the way most fetches in this app do.
+   */
   private async pollRestPrice(): Promise<void> {
     if (!this.running || this.restPolling) return;
     if (this.feed.latest()) return;
     this.restPolling = true;
     try {
-      const res = await fetch('/api/price', { headers: this.headers(), cache: 'no-store' });
+      const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${SYMBOL}`, { cache: 'no-store' });
       if (!res.ok) throw new Error(`price ${res.status}`);
-      const d = (await res.json()) as { price?: number | null };
-      if (!d.price) throw new Error('no price');
-      this.ingestTick({ t: Date.now(), p: d.price });
+      const d = (await res.json()) as { price?: string };
+      const price = Number(d.price);
+      if (!Number.isFinite(price) || price <= 0) throw new Error('no price');
+      this.ingestTick({ t: Date.now(), p: price });
       this.emit();
     } catch (err) {
       if (this.price === null) this.feedError = msg(err);
@@ -369,7 +375,7 @@ export class Engine {
     this.busy = 'opening';
     this.emit(true);
     try {
-      const book = await this.fetchBook();
+      const book = await fetchBook();
       const f = fillUsd(book, direction === 'LONG' ? 'BUY' : 'SELL', this.config.stakeUsd);
       if (f.qty <= 0) {
         this.log('warn', 'No liquidity for a simulated fill');
@@ -410,7 +416,7 @@ export class Engine {
     this.busy = 'closing';
     this.emit(true);
     try {
-      const book = await this.fetchBook();
+      const book = await fetchBook();
       const f = fillQty(book, open.direction === 'LONG' ? 'SELL' : 'BUY', open.qty);
       const closePrice = f.qty > 0 ? f.price : (this.price ?? open.openPrice);
       const closedQty = f.qty > 0 ? f.qty : open.qty;
@@ -432,17 +438,6 @@ export class Engine {
     } finally {
       this.busy = null;
       this.emit(true);
-    }
-  }
-
-  private async fetchBook(): Promise<Book | null> {
-    try {
-      const res = await fetch('/api/book', { headers: this.headers(), cache: 'no-store' });
-      if (!res.ok) throw new Error(`book ${res.status}`);
-      const d = (await res.json()) as { book?: Book };
-      return d.book ?? null;
-    } catch {
-      return null;
     }
   }
 

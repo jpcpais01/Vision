@@ -44,6 +44,12 @@ at a time and reporting a short fill when the book runs out rather than
 inventing liquidity that wasn't there. Paper trading, but priced exactly the
 way a live order would be.
 
+Every one of these calls — the tick stream, the ticker fallback, and the
+order-book fetch — goes straight from the browser to `binance.com`, never
+through this app's own server. Binance's REST API returns 451 for requests
+from US-based server IPs, which is where a Vercel serverless function runs
+by default; a real browser's own connection isn't affected.
+
 ## Setup
 
 ```bash
@@ -88,7 +94,8 @@ src/lib/
   montecarlo.ts        the driftless Monte Carlo — full-cycle path simulation
   engine.ts             the 20-second cycle loop
   store.ts               position and cycle history
-src/app/api/          server routes — access control, storage, Binance proxies
+src/app/api/          server routes — access control and durable storage only;
+                       every Binance call is made directly from the browser
 src/components/       the app
 ```
 

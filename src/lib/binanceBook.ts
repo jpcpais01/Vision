@@ -1,6 +1,25 @@
 import type { Book } from './types';
+import { SYMBOL } from './config';
 
 /** Order-book helpers. Pure, so the same maths prices every paper fill. */
+
+const DEPTH_URL = `https://api.binance.com/api/v3/depth?symbol=${SYMBOL}&limit=100`;
+
+/**
+ * Fetched directly from the browser, same as the live tick stream —
+ * Binance's REST API returns 451 for requests from US-based server IPs,
+ * which is where a Vercel serverless function runs by default, while a
+ * real browser's own connection is unaffected.
+ */
+export async function fetchBook(): Promise<Book | null> {
+  try {
+    const res = await fetch(DEPTH_URL, { cache: 'no-store' });
+    if (!res.ok) return null;
+    return parseBinanceDepth(await res.json());
+  } catch {
+    return null;
+  }
+}
 
 export function parseBinanceDepth(raw: unknown): Book {
   const r = (raw ?? {}) as { bids?: [string, string][]; asks?: [string, string][] };
