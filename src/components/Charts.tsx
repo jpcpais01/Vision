@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Direction, Tick } from '@/lib/types';
 import type { Band } from '@/lib/montecarlo';
 import { CYCLE_SEC, ENTRY_MARGIN_SEC } from '@/lib/config';
@@ -63,22 +63,38 @@ export function CycleChart({
   const H = h || 1;
   const pad = { t: 18, r: 10, b: 14, l: 10 };
 
-  // Real trades can arrive sparsely — this just re-renders every 100ms so the
-  // line keeps advancing at the last known price in between, instead of
-  // sitting dead flat until the next trade actually lands.
-  const [now, setNow] = useState(() => Date.now());
+  // A continuously-growing trail for this cycle: seeded from real ticks the
+  // instant they exist, then sampled every 100ms at the last known price —
+  // so the line is always an actual, growing curve. A single trailing point
+  // recomputed fresh each tick could collapse to a near-zero-length segment
+  // (dot visible, line effectively invisible) right after a cycle rolls or
+  // in a quiet market; an accumulating buffer can't degenerate that way.
+  const [trail, setTrail] = useState<{ t: number; p: number }[]>([]);
+  const latest = useRef({ ticks, cycleStart });
+  latest.current = { ticks, cycleStart };
+
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 100);
+    setTrail([]);
+  }, [cycleStart]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      const { ticks: t, cycleStart: cs } = latest.current;
+      if (cs == null) return;
+      const real = t.filter((k) => k.t >= cs);
+      setTrail((prev) => {
+        const base = prev.length ? prev : real;
+        const price = real[real.length - 1]?.p ?? base[base.length - 1]?.p;
+        if (price === undefined) return prev;
+        const now = Date.now();
+        const next = base[base.length - 1]?.t === now ? base : [...base, { t: now, p: price }];
+        return next.length > 700 ? next.slice(-700) : next;
+      });
+    }, 100);
     return () => clearInterval(id);
   }, []);
 
-  const pts = useMemo(() => {
-    if (cycleStart == null) return [];
-    const real = ticks.filter((k) => k.t >= cycleStart);
-    const last = real[real.length - 1];
-    if (last && now - last.t > 50) return [...real, { t: now, p: last.p }];
-    return real;
-  }, [ticks, cycleStart, now]);
+  const pts = trail;
 
   const ready = band && cycleStart !== null && cycleStartPrice !== null && pts.length >= 2 && w > 0 && h > 0;
 

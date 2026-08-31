@@ -27,7 +27,7 @@ export const DEFAULT_CONFIG: Config = {
   autoTrade: true,
   killSwitch: false,
   closeAtSecond: CYCLE_SEC - ENTRY_MARGIN_SEC,
-  unlikeliness: 0.2, // trade when the model gives the current move less than a 20% chance
+  unlikeliness: 0.1, // trade when the model gives the current move less than a 10% chance
   stakeUsd: 1000,
   leverage: 10,
   maxSlippageUsd: 10,
