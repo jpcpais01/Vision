@@ -176,7 +176,7 @@ Per bot, seven things, all on sliders or a toggle:
   below)
 - **Volatility window** — how many trailing one-second price points feed this
   bot's own volatility estimate, and so its own simulation, 60s to 3,600s
-  (default 60s — see below)
+  (default 300s — see below)
 
 Entries are never allowed in the first or last 10 seconds of a cycle,
 regardless of these settings — not a setting, a fixed rule (`ENTRY_MARGIN_SEC`
@@ -262,7 +262,7 @@ honestly; a filled quantity is rounded down to a real lot size, never up;
 reversion and momentum take opposite sides of the same unlikely move;
 leverage clamps to [1x, 10x] on write and defaults to 1x; max slippage
 clamps to a positive dollar amount on write; the volatility window clamps to
-[60s, 3,600s] on write and defaults to 60s.
+[60s, 3,600s] on write and defaults to 300s.
 
 ## Known limits
 

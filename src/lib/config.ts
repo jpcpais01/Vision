@@ -31,7 +31,7 @@ export const DEFAULT_CONFIG: Config = {
   stakeUsd: 1000,
   leverage: 1,
   maxSlippageUsd: 10,
-  volatilityWindowSec: MIN_VOL_WINDOW_SEC,
+  volatilityWindowSec: 300,
 };
 
 const BOUNDS = {

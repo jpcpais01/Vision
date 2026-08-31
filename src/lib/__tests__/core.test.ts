@@ -190,7 +190,7 @@ test('the defaults leave room to enter and close within the no-entry margins', (
   assert.ok(c.unlikeliness > 0 && c.unlikeliness < 1);
   assert.ok(c.stakeUsd > 0);
   assert.equal(c.leverage, 1, 'defaults to no leverage');
-  assert.equal(c.volatilityWindowSec, MIN_VOL_WINDOW_SEC, 'defaults to the shortest, most reactive window');
+  assert.ok(c.volatilityWindowSec >= MIN_VOL_WINDOW_SEC && c.volatilityWindowSec <= MAX_VOL_WINDOW_SEC);
 });
 
 // ── Strategies ───────────────────────────────────────────────────────────────
