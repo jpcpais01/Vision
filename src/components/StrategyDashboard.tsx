@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useBot } from '@/hooks/useBot';
 import { useEngineContext } from '@/components/EngineProvider';
-import { CYCLE_SEC, HISTORY_SEC, PATHS } from '@/lib/config';
+import { CYCLE_SEC, PATHS } from '@/lib/config';
 import { strategyDef } from '@/lib/strategies';
 import { CycleChart } from '@/components/Charts';
 import { Settings } from '@/components/Settings';
@@ -114,7 +114,7 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
             </div>
           </>
         ) : (
-          <StartPrompt strategyBlurb={def.blurb} />
+          <StartPrompt strategyBlurb={def.blurb} volatilityWindowSec={config.volatilityWindowSec} />
         )}
       </div>
 
@@ -184,14 +184,20 @@ function PositionHud({ position, price, busy }: { position: Position; price: num
   );
 }
 
-function StartPrompt({ strategyBlurb }: { strategyBlurb: string }) {
+function StartPrompt({
+  strategyBlurb,
+  volatilityWindowSec,
+}: {
+  strategyBlurb: string;
+  volatilityWindowSec: number;
+}) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
       <div className="text-2xl font-bold uppercase tracking-widest text-[#eaf1fb]">Press start</div>
       <p className="max-w-sm text-xs leading-relaxed text-[#7c8aa0]">
         Every {CYCLE_SEC}s it takes the live Binance price as a fresh reference, simulates {PATHS.toLocaleString()}{' '}
-        random paths using the realised volatility of the last {HISTORY_SEC}s, and watches whether the price strays
-        further than the simulation thinks is likely. {strategyBlurb}
+        random paths using the realised volatility of the last {volatilityWindowSec}s, and watches whether the price
+        strays further than the simulation thinks is likely. {strategyBlurb}
       </p>
     </div>
   );

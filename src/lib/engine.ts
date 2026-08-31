@@ -1,5 +1,5 @@
 import type { Config, CycleRecord, Direction, LogLine, Position, Stats, StrategyId, Tick } from './types';
-import { CYCLE_SEC, DEFAULT_CONFIG, ENTRY_MARGIN_SEC, FUTURES_REST, HISTORY_SEC, PATHS, SYMBOL } from './config';
+import { CYCLE_SEC, DEFAULT_CONFIG, ENTRY_MARGIN_SEC, FUTURES_REST, MAX_VOL_WINDOW_SEC, PATHS, SYMBOL } from './config';
 import { STRATEGIES, directionFor } from './strategies';
 import { volatility } from './series';
 import { bandFromDistribution, simulateCycle, tailProbability, type Band, type CycleDistribution } from './montecarlo';
@@ -23,10 +23,12 @@ import { BinanceFeed } from './binanceFeed';
  * between them.
  *
  *   1. Every `CYCLE_SEC`-second slot of the wall clock (:00, :01:00, :02:00…),
- *      take the price right now as the cycle's reference and simulate
- *      `PATHS` random walks forward, one second at a time, using the
- *      realised volatility of the last `HISTORY_SEC` one-second price
- *      points.
+ *      take the price right now as the cycle's reference. Each bot then
+ *      simulates its own `PATHS` random walks forward, one second at a time,
+ *      using the realised volatility of its own configured lookback window
+ *      (`Config.volatilityWindowSec`) — the reference price is shared, but a
+ *      shorter or longer window gives each bot its own distribution and so
+ *      its own tail probability from the same tape.
  *   2. From `ENTRY_MARGIN_SEC` seconds in — never before, so there's a real
  *      tape to react to — each bot independently checks the live price
  *      against what the simulation says is plausible at that exact second.
@@ -51,17 +53,20 @@ export interface MarketSnapshot {
   price: number | null;
   priceAt: number;
   ticks: Tick[];
-  volPct: number | null;
   cycleStart: number | null;
   cycleEnd: number | null;
   cycleStartPrice: number | null;
   elapsedSec: number | null;
-  tailProb: number | null;
 }
 
 export interface BotSnapshot extends MarketSnapshot {
   strategyId: StrategyId;
   config: Config;
+  /** This bot's own volatility read, from its own configured window — differs
+   *  between bots whenever their windows do, even against the same tape. */
+  volPct: number | null;
+  /** This bot's own tail probability, from its own distribution. */
+  tailProb: number | null;
   band: Band[] | null;
   skipReason: string | null;
   busy: Busy;
@@ -74,12 +79,15 @@ export interface BotSnapshot extends MarketSnapshot {
 
 const CYCLE_MS = CYCLE_SEC * 1000;
 const MAX_TICKS = 2400;
-const MAX_SECONDS = HISTORY_SEC * 3;
+const MAX_SECONDS = MAX_VOL_WINDOW_SEC;
 const MAX_LOGS = 200;
 const STRATEGY_IDS = STRATEGIES.map((s) => s.id);
 
 interface Bot {
   config: Config;
+  vol: { sigma: number; volPct: number };
+  dist: CycleDistribution | null;
+  tailProb: number | null;
   skipReason: string | null;
   busy: Busy;
   position: Position | null;
@@ -93,6 +101,9 @@ interface Bot {
 function freshBot(): Bot {
   return {
     config: { ...DEFAULT_CONFIG },
+    vol: { sigma: 0, volPct: 0 },
+    dist: null,
+    tailProb: null,
     skipReason: null,
     busy: null,
     position: null,
@@ -114,12 +125,9 @@ export class Engine {
   private connected = false;
   private restPolling = false;
   private feedError: string | null = null;
-  private vol = { sigma: 0, volPct: 0 };
 
   private cycleStart: number | null = null;
   private cycleStartPrice: number | null = null;
-  private dist: CycleDistribution | null = null;
-  private tailProb: number | null = null;
   /** Which cycle's first-tick delay has already been logged, so it's reported exactly once per cycle. */
   private firstTickLoggedForCycle: number | null = null;
   /** Market-level events — feed status, cycle rolls — shared into every bot's Activity log. */
@@ -156,14 +164,17 @@ export class Engine {
     this.running = true;
     this.ticks = [];
     this.seconds = [];
-    this.vol = { sigma: 0, volPct: 0 };
     this.cycleStart = null;
     this.cycleStartPrice = null;
-    this.dist = null;
-    this.tailProb = null;
+    for (const id of STRATEGY_IDS) {
+      const bot = this.bots[id];
+      bot.vol = { sigma: 0, volPct: 0 };
+      bot.dist = null;
+      bot.tailProb = null;
+    }
     this.log(
       'info',
-      `Started. Simulating ${PATHS.toLocaleString()} paths every ${CYCLE_SEC}s from the realised volatility of the last ${HISTORY_SEC} one-second prices.`
+      `Started. Simulating ${PATHS.toLocaleString()} paths every ${CYCLE_SEC}s per bot, from each bot's own configured volatility window.`
     );
 
     this.feed.start();
@@ -259,13 +270,13 @@ export class Engine {
       price: this.price,
       priceAt: this.priceAt,
       ticks: this.ticks.slice(-600),
-      volPct: this.vol.volPct || null,
+      volPct: bot.vol.volPct || null,
       cycleStart: this.cycleStart,
       cycleEnd: this.cycleStart !== null ? this.cycleStart + CYCLE_MS : null,
       cycleStartPrice: this.cycleStartPrice,
       elapsedSec: this.cycleStart !== null ? (now - this.cycleStart) / 1000 : null,
-      band: this.dist ? bandFromDistribution(this.dist, bot.config.unlikeliness) : null,
-      tailProb: this.tailProb,
+      band: bot.dist ? bandFromDistribution(bot.dist, bot.config.unlikeliness) : null,
+      tailProb: bot.tailProb,
       skipReason: bot.skipReason,
       busy: bot.busy,
       position: bot.position,
@@ -278,7 +289,10 @@ export class Engine {
 
   // ── Price ─────────────────────────────────────────────────────────────────
 
-  /** Fold one genuine Binance trade into the tape — ticks, the 1s-resampled series, and volatility. */
+  /** Fold one genuine Binance trade into the tape — ticks and the 1s-resampled series.
+   *  Volatility is only ever read off this tape at the start of a cycle (see
+   *  rollCycle), each bot against its own configured window — there's no
+   *  reason to recompute it on every tick when nothing reads it in between. */
   private ingestTick(tick: Tick): void {
     if (!(tick.p > 0)) return;
     this.price = tick.p;
@@ -292,8 +306,6 @@ export class Engine {
     if (last && last.t === sec) last.p = tick.p;
     else if (!last || sec > last.t) this.seconds.push({ t: sec, p: tick.p });
     if (this.seconds.length > MAX_SECONDS) this.seconds = this.seconds.slice(-MAX_SECONDS);
-
-    this.vol = volatility(this.seconds.slice(-HISTORY_SEC));
 
     // Diagnostic: exactly how long after a cycle boundary the first tick that
     // actually qualifies for it (tick.t >= cycleStart) shows up — logged once
@@ -344,9 +356,12 @@ export class Engine {
 
     const elapsedSec = (now - this.cycleStart) / 1000;
 
-    if (this.dist && this.cycleStartPrice !== null && this.price !== null) {
-      this.tailProb = tailProbability(this.dist, elapsedSec, this.cycleStartPrice, this.price);
-      for (const id of STRATEGY_IDS) this.considerTrade(id, elapsedSec);
+    if (this.cycleStartPrice !== null && this.price !== null) {
+      for (const id of STRATEGY_IDS) {
+        const bot = this.bots[id];
+        if (bot.dist) bot.tailProb = tailProbability(bot.dist, elapsedSec, this.cycleStartPrice, this.price);
+        this.considerTrade(id, elapsedSec);
+      }
     }
 
     for (const id of STRATEGY_IDS) {
@@ -357,7 +372,9 @@ export class Engine {
     }
   }
 
-  /** Finalise the cycle just ended (if any), for every bot, then simulate the new one from the price right now. */
+  /** Finalise the cycle just ended (if any), for every bot, then simulate each
+   *  bot's own new one from the price right now — same reference price, own
+   *  volatility window, own distribution. */
   private rollCycle(boundary: number): void {
     if (this.cycleStart !== null && this.cycleStartPrice !== null) {
       const cycleId = String(this.cycleStart);
@@ -370,8 +387,8 @@ export class Engine {
           startMs: this.cycleStart,
           endMs: this.cycleStart + CYCLE_MS,
           startPrice: this.cycleStartPrice,
-          sigma: this.vol.sigma,
-          volPct: this.vol.volPct,
+          sigma: bot.vol.sigma,
+          volPct: bot.vol.volPct,
           traded: done.length > 0,
           pnl: done.length > 0 ? done.reduce((s, p) => s + (p.pnl ?? 0), 0) : null,
         };
@@ -384,12 +401,15 @@ export class Engine {
 
     this.cycleStart = boundary;
     this.cycleStartPrice = this.price;
-    this.tailProb = null;
     this.firstTickLoggedForCycle = null;
-    for (const id of STRATEGY_IDS) this.bots[id].skipReason = null;
+    for (const id of STRATEGY_IDS) {
+      const bot = this.bots[id];
+      bot.tailProb = null;
+      bot.skipReason = null;
+    }
 
     if (this.cycleStartPrice === null) {
-      this.dist = null;
+      for (const id of STRATEGY_IDS) this.bots[id].dist = null;
       this.log('warn', 'New cycle — no price yet, sitting this one out');
       return;
     }
@@ -398,19 +418,29 @@ export class Engine {
     // step() timer only polls every 250ms, so a few ms of slack here is
     // normal; anything much larger points at the main thread being busy.
     const rollLagMs = Date.now() - boundary;
+    const startPrice = this.cycleStartPrice;
 
-    this.dist = simulateCycle({
-      startPrice: this.cycleStartPrice,
-      sigma: this.vol.sigma,
-      cycleSec: CYCLE_SEC,
-      paths: PATHS,
-      seed: this.seed++,
-    });
-    this.log(
-      'info',
-      `Cycle started at $${this.cycleStartPrice.toFixed(2)} — ${this.vol.volPct.toFixed(0)}% volatility ` +
-        `(rolled ${rollLagMs}ms after boundary, simulated in ${this.dist.computeMs}ms)`
-    );
+    for (const id of STRATEGY_IDS) {
+      const bot = this.bots[id];
+      bot.vol = volatility(this.seconds.slice(-bot.config.volatilityWindowSec));
+      bot.dist = simulateCycle({
+        startPrice,
+        sigma: bot.vol.sigma,
+        cycleSec: CYCLE_SEC,
+        paths: PATHS,
+        seed: this.seed++,
+      });
+    }
+
+    this.log('info', `Cycle started at $${startPrice.toFixed(2)} (rolled ${rollLagMs}ms after boundary)`);
+    for (const id of STRATEGY_IDS) {
+      const bot = this.bots[id];
+      this.botLog(
+        id,
+        'info',
+        `${bot.vol.volPct.toFixed(0)}% volatility over the last ${bot.config.volatilityWindowSec}s, simulated in ${bot.dist!.computeMs}ms`
+      );
+    }
   }
 
   /**
@@ -437,14 +467,14 @@ export class Engine {
       bot.skipReason = 'too late in this cycle';
       return;
     }
-    if (this.tailProb === null || this.cycleStartPrice === null || this.price === null) return;
-    if (this.tailProb >= bot.config.unlikeliness) {
-      bot.skipReason = `${(this.tailProb * 100).toFixed(1)}% still plausible`;
+    if (bot.tailProb === null || this.cycleStartPrice === null || this.price === null) return;
+    if (bot.tailProb >= bot.config.unlikeliness) {
+      bot.skipReason = `${(bot.tailProb * 100).toFixed(1)}% still plausible`;
       return;
     }
     bot.skipReason = null;
     const direction = directionFor(strategyId, this.price > this.cycleStartPrice);
-    void this.openPosition(strategyId, direction, this.tailProb, this.price);
+    void this.openPosition(strategyId, direction, bot.tailProb, this.price);
   }
 
   private async openPosition(

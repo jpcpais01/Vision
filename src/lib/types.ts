@@ -88,6 +88,10 @@ export interface Config {
    *  this many dollars while filling — the same protection a real limit-priced
    *  market order gets. Never blocks a close, only ever a fresh entry. */
   maxSlippageUsd: number;
+  /** How many trailing one-second price points feed this bot's own volatility
+   *  estimate — and so its own cycle simulation. A shorter window reacts faster
+   *  to a recent regime change; a longer one smooths out noise. */
+  volatilityWindowSec: number;
 }
 
 export interface Stats {

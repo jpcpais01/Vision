@@ -5,7 +5,7 @@ import { normCdf, normInv } from '../math/normal';
 import { NormalSampler, Rng } from '../math/rng';
 import { toSeconds, volatility } from '../series';
 import { fillQty, fillUsd, quote } from '../binanceBook';
-import { CYCLE_SEC, DEFAULT_CONFIG, ENTRY_MARGIN_SEC, MAX_LEVERAGE, sanitize } from '../config';
+import { CYCLE_SEC, DEFAULT_CONFIG, ENTRY_MARGIN_SEC, MAX_LEVERAGE, MAX_VOL_WINDOW_SEC, MIN_VOL_WINDOW_SEC, sanitize } from '../config';
 import { directionFor } from '../strategies';
 import type { Tick } from '../types';
 
@@ -165,13 +165,22 @@ test('a filled quantity is rounded down to a real lot size, never up', () => {
 // ── Config ──────────────────────────────────────────────────────────────────
 
 test('config is clamped on write', () => {
-  const c = sanitize({ closeAtSecond: 1000, stakeUsd: -10, unlikeliness: 2, leverage: 999, maxSlippageUsd: -5 });
+  const c = sanitize({
+    closeAtSecond: 1000,
+    stakeUsd: -10,
+    unlikeliness: 2,
+    leverage: 999,
+    maxSlippageUsd: -5,
+    volatilityWindowSec: 5,
+  });
   assert.ok(c.closeAtSecond <= CYCLE_SEC - ENTRY_MARGIN_SEC);
-  assert.ok(c.stakeUsd >= 1);
+  assert.ok(c.stakeUsd >= 10);
   assert.ok(c.unlikeliness <= 0.4);
   assert.equal(c.leverage, MAX_LEVERAGE);
   assert.equal(sanitize({ leverage: 0 }).leverage, 1, 'never below 1x — that would be de-leveraging, a different feature');
   assert.ok(c.maxSlippageUsd >= 1);
+  assert.equal(c.volatilityWindowSec, MIN_VOL_WINDOW_SEC);
+  assert.equal(sanitize({ volatilityWindowSec: 999_999 }).volatilityWindowSec, MAX_VOL_WINDOW_SEC);
   assert.equal(sanitize({ autoTrade: 'yes' }).autoTrade, DEFAULT_CONFIG.autoTrade);
 });
 
@@ -181,6 +190,7 @@ test('the defaults leave room to enter and close within the no-entry margins', (
   assert.ok(c.unlikeliness > 0 && c.unlikeliness < 1);
   assert.ok(c.stakeUsd > 0);
   assert.equal(c.leverage, 1, 'defaults to no leverage');
+  assert.equal(c.volatilityWindowSec, MIN_VOL_WINDOW_SEC, 'defaults to the shortest, most reactive window');
 });
 
 // ── Strategies ───────────────────────────────────────────────────────────────

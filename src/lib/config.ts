@@ -4,8 +4,9 @@ import type { Config } from './types';
 export const CYCLE_SEC = 60;
 /** No entries in the first — or the last — this many seconds of a cycle. */
 export const ENTRY_MARGIN_SEC = 10;
-/** How many trailing one-second price points feed the volatility estimate. */
-export const HISTORY_SEC = 60;
+/** Bounds for each bot's own volatility lookback window — see Config.volatilityWindowSec. */
+export const MIN_VOL_WINDOW_SEC = 60;
+export const MAX_VOL_WINDOW_SEC = 3600;
 /** Monte Carlo paths per cycle. Fixed, not a setting. */
 export const PATHS = 1_000;
 
@@ -23,13 +24,14 @@ export const FUTURES_REST = 'https://fapi.binance.com';
 export const MAX_LEVERAGE = 10;
 
 export const DEFAULT_CONFIG: Config = {
-  autoTrade: false,
+  autoTrade: true,
   killSwitch: false,
   closeAtSecond: CYCLE_SEC - ENTRY_MARGIN_SEC,
   unlikeliness: 0.1, // trade when the model gives the current move less than a 10% chance
-  stakeUsd: 20,
+  stakeUsd: 1000,
   leverage: 1,
-  maxSlippageUsd: 50,
+  maxSlippageUsd: 10,
+  volatilityWindowSec: MIN_VOL_WINDOW_SEC,
 };
 
 const BOUNDS = {
@@ -38,9 +40,10 @@ const BOUNDS = {
   // bounds how much earlier than that a position can be forced closed.
   closeAtSecond: [ENTRY_MARGIN_SEC + 1, CYCLE_SEC - ENTRY_MARGIN_SEC],
   unlikeliness: [0.01, 0.4],
-  stakeUsd: [1, 10_000],
+  stakeUsd: [10, 10_000],
   leverage: [1, MAX_LEVERAGE],
   maxSlippageUsd: [1, 1000],
+  volatilityWindowSec: [MIN_VOL_WINDOW_SEC, MAX_VOL_WINDOW_SEC],
 } as const;
 
 /** Clamp an untrusted patch into range. Applied on every write, server-side too. */

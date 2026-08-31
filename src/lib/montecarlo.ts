@@ -4,11 +4,12 @@ import { quantileSorted } from './math/stats';
 /**
  * ── The only model ───────────────────────────────────────────────────────────
  *
- * A driftless Monte Carlo, run fresh at the start of every cycle: no
- * view is taken on direction. `paths` random walks are simulated forward from
- * the price right now, one step per second, using the realised volatility of
- * the last `HISTORY_SEC` one-second price points. Unlike a single-horizon
- * simulation, this keeps every path's price at *every* second of the cycle —
+ * A driftless Monte Carlo, run fresh at the start of every cycle for each bot:
+ * no view is taken on direction. `paths` random walks are simulated forward
+ * from the price right now, one step per second, using the realised
+ * volatility of that bot's own configured lookback window. Unlike a
+ * single-horizon simulation, this keeps every path's price at *every* second
+ * of the cycle —
  * the question isn't just "where might it end up" but "how far should it
  * plausibly have gotten by second N", checked continuously as the cycle plays
  * out.

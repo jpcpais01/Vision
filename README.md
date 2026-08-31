@@ -9,28 +9,32 @@ live price, its real order book, and the simulation.
 ## How it works
 
 Every 60 seconds, on the wall clock (:00, :01:00, :02:00…), a fresh cycle
-begins — shared by every bot, computed once:
+begins — the reference price is shared by every bot, but each bot then runs
+its own simulation from it:
 
 1. **Take the live price as the reference.** Whatever Binance's BTCUSDT
    perpetual trade stream last reported is this cycle's start price — never
-   a separate fetch, never anything else.
-2. **Simulate 1,000 paths.** A driftless Monte Carlo: 1,000 random walks,
-   one second at a time, for the 60 seconds of the cycle, using the plain
-   realised volatility of the last 60 one-second price points. Unlike a
+   a separate fetch, never anything else. Every bot uses the exact same
+   reference price for the cycle.
+2. **Each bot simulates its own 1,000 paths.** A driftless Monte Carlo: 1,000
+   random walks, one second at a time, for the 60 seconds of the cycle, using
+   the plain realised volatility of that bot's own configured lookback window
+   (**Volatility window**, below — 60s by default, up to an hour). Unlike a
    single end-of-window probability, this keeps every path's price at every
    second of the cycle — not just where it might end up, but how far it
-   should plausibly have gotten by any given second along the way.
+   should plausibly have gotten by any given second along the way. Two bots
+   watching the same tape can end up with different distributions, and so
+   different tail probabilities, purely from how much history each one
+   chooses to look back over.
 3. **Watch the live price against that distribution — but only from second
    10 to second 50.** No entries in the first 10 seconds (there's barely any
    tape yet to react to) or the last 10 (no bot should ever be mid-decision
    right as the next cycle is about to begin). Inside that window, at every
-   tick, check what share of the simulated paths reached at least as far
-   from the start price, in the same direction, by that same second. That
-   share is falling as the move gets more extreme — a low number means the
-   current price is a rare draw from the model's own distribution right now.
-   This part — the simulation and the tail probability it produces — is
-   identical for every bot; nothing about it depends on which strategy is
-   watching.
+   tick, each bot checks what share of its own simulated paths reached at
+   least as far from the start price, in the same direction, by that same
+   second. That share is falling as the move gets more extreme — a low
+   number means the current price is a rare draw from that bot's own
+   distribution right now.
 4. **Each bot decides for itself once that gets unlikely enough.** Its own
    configured threshold, its own side of the bet:
    - **Reversion** bets *against* the move — the price has strayed further
@@ -48,13 +52,15 @@ begins — shared by every bot, computed once:
 ## Multiple bots, one market
 
 There is one shared engine per browser tab — one Binance connection, one
-cycle timer, one Monte Carlo simulation — because duplicating that per
-strategy would just be the same computation run twice for no reason. What
-each bot owns independently is its config, its open position, its trade
-history, and its P&L. The top nav switches which bot's dashboard you're
-looking at; **Start**, **Stop**, and **Stop all** act on the shared engine
-underneath all of them, so every bot keeps trading regardless of which page
-is open — switching pages never pauses anything.
+cycle timer, one reference price per cycle — because duplicating the feed and
+the clock per strategy would just be the same plumbing run twice for no
+reason. What each bot owns independently is its config, its own Monte Carlo
+simulation (run from its own volatility window against the shared reference
+price), its open position, its trade history, and its P&L. The top nav
+switches which bot's dashboard you're looking at; **Start**, **Stop**, and
+**Stop all** act on the shared engine underneath all of them, so every bot
+keeps trading regardless of which page is open — switching pages never
+pauses anything.
 
 Adding a new strategy means adding one entry to `src/lib/strategies.ts` —
 a name, a blurb, and which side of an unlikely move it takes. Everything
@@ -125,8 +131,8 @@ npm run dev
 
 No `.env.local` is required. Press **Start** on any strategy page — it
 connects to Binance and begins running 60-second cycles for every bot at
-once. Each bot's own **Trade automatically** stays off until you turn it
-on, so you can watch it decide first.
+once. Each bot's own **Trade automatically** is on by default; flip it off
+in Settings if you'd rather watch a bot decide before it can actually buy.
 
 ### Environment variables
 
@@ -142,18 +148,23 @@ variables you want, done. No build configuration needed.
 
 ## Settings
 
-Per bot, six things, all on sliders or a toggle:
+Per bot, seven things, all on sliders or a toggle:
 
-- **Trade automatically** — off means this bot watches and logs, but never buys
+- **Trade automatically** — on by default; off means this bot watches and
+  logs, but never buys
 - **Flag when probability drops below** — how unlikely the current move has
   to be, versus the simulation, before it's a signal (default 10%)
 - **Close trades at second** — force-close whatever's open this many seconds
   into the 60-second cycle (default 50, and capped there — see below)
-- **Stake per trade** — fixed USD margin per position (default $20)
+- **Stake per trade** — fixed USD margin per position, $10 to $10,000
+  (default $1,000)
 - **Leverage** — 1x to 10x, multiplies notional exposure (default 1x — see below)
 - **Max slippage** — reject a new entry if the fill price moves against it by
-  more than this many dollars while the order is filling (default $50 — see
+  more than this many dollars while the order is filling (default $10 — see
   below)
+- **Volatility window** — how many trailing one-second price points feed this
+  bot's own volatility estimate, and so its own simulation, 60s to 3,600s
+  (default 60s — see below)
 
 Entries are never allowed in the first or last 10 seconds of a cycle,
 regardless of these settings — not a setting, a fixed rule (`ENTRY_MARGIN_SEC`
@@ -183,6 +194,15 @@ recognized order-protection mechanism, not something invented for this app.
 It only ever blocks a fresh entry — a scheduled close always goes through,
 same as a real position that must be exited regardless of price.
 
+**Volatility window** decides how much trailing tape each bot's own
+simulation is built on — the reference price at the start of a cycle is
+shared by every bot, but the volatility fed into the Monte Carlo is read off
+each bot's own configured window. A short window (down to 60s, the minimum)
+reacts fast to a recent regime change; a long one (up to an hour) smooths
+short-lived noise out of the estimate. Two bots can watch the exact same tape
+and, purely from this setting, land on different distributions and different
+tail probabilities for the same move.
+
 **Stop all** in the header is global — every bot, immediately. Resetting one
 bot's own stop (shown once that bot is stopped) only re-arms that one.
 
@@ -194,8 +214,8 @@ src/lib/
   binanceFeed.ts      the shared price source — Binance futures' live trade stream (browser WebSocket)
   binanceBook.ts       real futures order-book depth, lot-size rounding, and the paper fill model
   series.ts             one-second price sampling and realised volatility
-  montecarlo.ts          the driftless Monte Carlo — full-cycle path simulation, shared by every bot
-  engine.ts               the 60-second cycle loop, running every bot off the one shared simulation
+  montecarlo.ts          the driftless Monte Carlo — full-cycle path simulation, run once per bot per cycle
+  engine.ts               the 60-second cycle loop; one shared reference price, one simulation per bot
   store.ts                 per-bot position and cycle history
 src/app/
   [strategy]/            one route per bot — /reversion, /momentum
@@ -208,7 +228,7 @@ src/components/
   StrategyDashboard.tsx   one bot's page — the chart and its HUD overlays, a stat strip, settings and history as modals
   Charts.tsx              the price line against the simulated probability cone, full bleed
   HistoryPanel.tsx        positions and the activity log, tabbed, behind one button
-  Settings.tsx            the six per-bot settings, as a modal
+  Settings.tsx            the seven per-bot settings, as a modal
 ```
 
 ## Tests
@@ -227,7 +247,8 @@ collapses to zero with no data; a paper fill walks real depth on both sides
 honestly; a filled quantity is rounded down to a real lot size, never up;
 reversion and momentum take opposite sides of the same unlikely move;
 leverage clamps to [1x, 10x] on write and defaults to 1x; max slippage
-clamps to a positive dollar amount on write.
+clamps to a positive dollar amount on write; the volatility window clamps to
+[60s, 3,600s] on write and defaults to 60s.
 
 ## Known limits
 

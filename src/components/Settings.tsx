@@ -3,10 +3,10 @@
 import { useEffect } from 'react';
 import type { Config } from '@/lib/types';
 import type { Health } from '@/components/EngineProvider';
-import { CYCLE_SEC, ENTRY_MARGIN_SEC, MAX_LEVERAGE } from '@/lib/config';
+import { CYCLE_SEC, ENTRY_MARGIN_SEC, MAX_LEVERAGE, MAX_VOL_WINDOW_SEC, MIN_VOL_WINDOW_SEC } from '@/lib/config';
 import { cx } from '@/lib/format';
 
-/** Six things. If a knob has no clear reason to be turned, it is not here. */
+/** Seven things. If a knob has no clear reason to be turned, it is not here. */
 export function Settings({
   strategyName,
   config,
@@ -103,9 +103,9 @@ export function Settings({
             label="Stake per trade"
             hint="Fixed USD margin per position — the actual exposure is this times leverage."
             value={config.stakeUsd}
-            min={1}
-            max={500}
-            step={1}
+            min={10}
+            max={10_000}
+            step={10}
             prefix="$"
             onChange={(v) => onChange({ stakeUsd: v })}
           />
@@ -130,6 +130,17 @@ export function Settings({
             step={1}
             prefix="$"
             onChange={(v) => onChange({ maxSlippageUsd: v })}
+          />
+
+          <Slider
+            label="Volatility window"
+            hint="How much trailing price history feeds this bot's own volatility estimate — and so its own simulation. Shorter reacts faster to a recent regime change; longer smooths out noise."
+            value={config.volatilityWindowSec}
+            min={MIN_VOL_WINDOW_SEC}
+            max={MAX_VOL_WINDOW_SEC}
+            step={30}
+            suffix="s"
+            onChange={(v) => onChange({ volatilityWindowSec: v })}
           />
 
           <div className="border-t border-[var(--line)] pt-4">
