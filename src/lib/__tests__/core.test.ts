@@ -189,7 +189,7 @@ test('the defaults leave room to enter and close within the no-entry margins', (
   assert.ok(c.closeAtSecond > ENTRY_MARGIN_SEC && c.closeAtSecond <= CYCLE_SEC - ENTRY_MARGIN_SEC);
   assert.ok(c.unlikeliness > 0 && c.unlikeliness < 1);
   assert.ok(c.stakeUsd > 0);
-  assert.equal(c.leverage, 1, 'defaults to no leverage');
+  assert.ok(c.leverage >= 1 && c.leverage <= MAX_LEVERAGE);
   assert.ok(c.volatilityWindowSec >= MIN_VOL_WINDOW_SEC && c.volatilityWindowSec <= MAX_VOL_WINDOW_SEC);
 });
 

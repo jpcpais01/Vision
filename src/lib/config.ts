@@ -21,7 +21,7 @@ export const SYMBOL = 'BTCUSDT';
 export const FUTURES_WS = 'wss://fstream.binance.com';
 export const FUTURES_REST = 'https://fapi.binance.com';
 
-export const MAX_LEVERAGE = 10;
+export const MAX_LEVERAGE = 100;
 
 export const DEFAULT_CONFIG: Config = {
   autoTrade: true,
@@ -29,7 +29,7 @@ export const DEFAULT_CONFIG: Config = {
   closeAtSecond: CYCLE_SEC - ENTRY_MARGIN_SEC,
   unlikeliness: 0.2, // trade when the model gives the current move less than a 20% chance
   stakeUsd: 1000,
-  leverage: 1,
+  leverage: 10,
   maxSlippageUsd: 10,
   volatilityWindowSec: 300,
 };

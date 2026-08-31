@@ -170,7 +170,7 @@ Per bot, seven things, all on sliders or a toggle:
   into the 60-second cycle (default 50, and capped there — see below)
 - **Stake per trade** — fixed USD margin per position, $10 to $10,000
   (default $1,000)
-- **Leverage** — 1x to 10x, multiplies notional exposure (default 1x — see below)
+- **Leverage** — 1x to 100x, multiplies notional exposure (default 10x — see below)
 - **Max slippage** — reject a new entry if the fill price moves against it by
   more than this many dollars while the order is filling (default $10 — see
   below)
@@ -260,7 +260,7 @@ collapses to zero with no data; a paper fill walks real depth on both sides
 (USD-sized to open, quantity-sized to close) and reports shortfalls
 honestly; a filled quantity is rounded down to a real lot size, never up;
 reversion and momentum take opposite sides of the same unlikely move;
-leverage clamps to [1x, 10x] on write and defaults to 1x; max slippage
+leverage clamps to [1x, 100x] on write and defaults to 10x; max slippage
 clamps to a positive dollar amount on write; the volatility window clamps to
 [60s, 3,600s] on write and defaults to 300s.
 
@@ -272,7 +272,7 @@ clamps to a positive dollar amount on write; the volatility window clamps to
   in until it reconnects — still genuine, just slower to update.
 - **This is paper trading only.** There is no live order path in this app.
 - **Fees and liquidation risk aren't modelled.** Every reported P&L is gross,
-  and margin is never a real constraint — leverage (up to 10x) scales
+  and margin is never a real constraint — leverage (up to 100x) scales
   notional exposure and P&L, but no position is ever force-closed for it.
 - **The edge may not exist, for either strategy.** They cannot both be right
   about the same move — that's the point of running them side by side. Watch
