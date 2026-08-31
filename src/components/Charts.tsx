@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Direction, Tick } from '@/lib/types';
 import type { Band } from '@/lib/montecarlo';
 import { CYCLE_SEC, ENTRY_MARGIN_SEC } from '@/lib/config';
+import { usd } from '@/lib/format';
 
 /** One chart. Hand-drawn SVG — no library, nothing to load. The whole point of the screen. */
 
@@ -157,18 +158,26 @@ export function CycleChart({
           </filter>
         </defs>
 
-        {/* faint terminal-style horizontal grid */}
-        {[0.2, 0.4, 0.6, 0.8].map((f) => (
-          <line
-            key={f}
-            x1={pad.l}
-            x2={W - pad.r}
-            y1={pad.t + f * (H - pad.t - pad.b)}
-            y2={pad.t + f * (H - pad.t - pad.b)}
-            stroke="currentColor"
-            strokeOpacity="0.05"
-          />
-        ))}
+        {/* faint terminal-style horizontal grid, each line labelled with its price */}
+        {[0.2, 0.4, 0.6, 0.8].map((f) => {
+          const gy = pad.t + f * (H - pad.t - pad.b);
+          const price = mid + halfSpan * (1 - 2 * f);
+          return (
+            <g key={f}>
+              <line x1={pad.l} x2={W - pad.r} y1={gy} y2={gy} stroke="currentColor" strokeOpacity="0.05" />
+              <text
+                x={pad.l + 4}
+                y={gy - 3}
+                fontSize="9"
+                fontFamily="'IBM Plex Mono', ui-monospace, monospace"
+                fill="currentColor"
+                fillOpacity="0.45"
+              >
+                {usd(price, 0)}
+              </text>
+            </g>
+          );
+        })}
 
         <path d={bandFillPath} fill="url(#cone)" />
         <path d={bandHiPath} fill="none" stroke={BAND} strokeOpacity="0.55" strokeWidth="1.5" filter="url(#glow)" />
