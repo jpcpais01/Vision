@@ -117,6 +117,8 @@ export class Engine {
   private cycleStartPrice: number | null = null;
   private dist: CycleDistribution | null = null;
   private tailProb: number | null = null;
+  /** Which cycle's first-tick delay has already been logged, so it's reported exactly once per cycle. */
+  private firstTickLoggedForCycle: number | null = null;
   /** Market-level events — feed status, cycle rolls — shared into every bot's Activity log. */
   private marketLogs: LogLine[] = [];
 
@@ -289,6 +291,16 @@ export class Engine {
     if (this.seconds.length > MAX_SECONDS) this.seconds = this.seconds.slice(-MAX_SECONDS);
 
     this.vol = volatility(this.seconds.slice(-HISTORY_SEC));
+
+    // Diagnostic: exactly how long after a cycle boundary the first tick that
+    // actually qualifies for it (tick.t >= cycleStart) shows up — logged once
+    // per cycle, so a real gap here (versus render/compute cost) is visible
+    // directly instead of guessed at.
+    if (this.cycleStart !== null && tick.t >= this.cycleStart && this.firstTickLoggedForCycle !== this.cycleStart) {
+      this.firstTickLoggedForCycle = this.cycleStart;
+      const delay = tick.t - this.cycleStart;
+      if (delay > 200) this.log('warn', `First in-cycle tick arrived ${delay}ms after the cycle boundary`);
+    }
   }
 
   /**
@@ -370,6 +382,7 @@ export class Engine {
     this.cycleStart = boundary;
     this.cycleStartPrice = this.price;
     this.tailProb = null;
+    this.firstTickLoggedForCycle = null;
     for (const id of STRATEGY_IDS) this.bots[id].skipReason = null;
 
     if (this.cycleStartPrice === null) {
@@ -377,6 +390,11 @@ export class Engine {
       this.log('warn', 'New cycle — no price yet, sitting this one out');
       return;
     }
+
+    // Diagnostic: how late this actually ran versus the ideal boundary — the
+    // step() timer only polls every 250ms, so a few ms of slack here is
+    // normal; anything much larger points at the main thread being busy.
+    const rollLagMs = Date.now() - boundary;
 
     this.dist = simulateCycle({
       startPrice: this.cycleStartPrice,
@@ -387,7 +405,8 @@ export class Engine {
     });
     this.log(
       'info',
-      `Cycle started at $${this.cycleStartPrice.toFixed(2)} — ${this.vol.volPct.toFixed(0)}% volatility`
+      `Cycle started at $${this.cycleStartPrice.toFixed(2)} — ${this.vol.volPct.toFixed(0)}% volatility ` +
+        `(rolled ${rollLagMs}ms after boundary, simulated in ${this.dist.computeMs}ms)`
     );
   }
 
