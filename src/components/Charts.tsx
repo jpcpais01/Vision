@@ -90,11 +90,16 @@ export function CycleChart({
     );
   }
 
-  const lo = Math.min(cycleStartPrice, ...band.map((b) => b.lo), ...pts.map((p) => p.p));
-  const hi = Math.max(cycleStartPrice, ...band.map((b) => b.hi), ...pts.map((p) => p.p));
-  const span = Math.max(hi - lo, cycleStartPrice * 0.0006);
-  const mid = (hi + lo) / 2;
-  const y = (v: number) => pad.t + ((mid + span * 0.6 - v) / (span * 1.2)) * (H - pad.t - pad.b);
+  // The y-axis is centered on the start price, with the visible half-range
+  // held to at least 3x the probability cone's own peak deviation from it —
+  // so the cone (and the price line inside it) sits with generous headroom
+  // instead of filling the chart edge to edge. A real price move that
+  // outruns the cone still forces the axis wider, so it's never clipped.
+  const bandDev = band.reduce((m, b) => Math.max(m, Math.abs(b.hi - cycleStartPrice), Math.abs(b.lo - cycleStartPrice)), 0);
+  const priceDev = pts.reduce((m, p) => Math.max(m, Math.abs(p.p - cycleStartPrice)), 0);
+  const halfSpan = Math.max(bandDev * 3, priceDev, cycleStartPrice * 0.0006);
+  const mid = cycleStartPrice;
+  const y = (v: number) => pad.t + ((mid + halfSpan - v) / (halfSpan * 2)) * (H - pad.t - pad.b);
   const x = (t: number) => pad.l + Math.min(1, (t - cycleStart) / (CYCLE_SEC * 1000)) * (W - pad.l - pad.r);
   const xSec = (s: number) => pad.l + (s / CYCLE_SEC) * (W - pad.l - pad.r);
 
