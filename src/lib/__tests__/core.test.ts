@@ -5,7 +5,7 @@ import { normCdf, normInv } from '../math/normal';
 import { NormalSampler, Rng } from '../math/rng';
 import { toSeconds, volatility } from '../series';
 import { fillQty, fillUsd, quote } from '../binanceBook';
-import { DEFAULT_CONFIG, sanitize } from '../config';
+import { CYCLE_SEC, DEFAULT_CONFIG, ENTRY_MARGIN_SEC, sanitize } from '../config';
 import { directionFor } from '../strategies';
 import type { Tick } from '../types';
 
@@ -165,16 +165,16 @@ test('a filled quantity is rounded down to a real lot size, never up', () => {
 // ── Config ──────────────────────────────────────────────────────────────────
 
 test('config is clamped on write', () => {
-  const c = sanitize({ closeAtSecond: 100, stakeUsd: -10, unlikeliness: 2 });
-  assert.ok(c.closeAtSecond <= 19);
+  const c = sanitize({ closeAtSecond: 1000, stakeUsd: -10, unlikeliness: 2 });
+  assert.ok(c.closeAtSecond <= CYCLE_SEC - ENTRY_MARGIN_SEC);
   assert.ok(c.stakeUsd >= 1);
   assert.ok(c.unlikeliness <= 0.4);
   assert.equal(sanitize({ autoTrade: 'yes' }).autoTrade, DEFAULT_CONFIG.autoTrade);
 });
 
-test('the defaults leave room to enter and close within one cycle', () => {
+test('the defaults leave room to enter and close within the no-entry margins', () => {
   const c = DEFAULT_CONFIG;
-  assert.ok(c.closeAtSecond > 0 && c.closeAtSecond < 20);
+  assert.ok(c.closeAtSecond > ENTRY_MARGIN_SEC && c.closeAtSecond <= CYCLE_SEC - ENTRY_MARGIN_SEC);
   assert.ok(c.unlikeliness > 0 && c.unlikeliness < 1);
   assert.ok(c.stakeUsd > 0);
 });

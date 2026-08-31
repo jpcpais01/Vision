@@ -1,7 +1,9 @@
 import type { Config } from './types';
 
-/** The whole strategy runs on fixed 20-second slots of the wall clock — :00, :20, :40. */
-export const CYCLE_SEC = 20;
+/** The whole strategy runs on fixed 60-second slots of the wall clock — :00, :01:00, :02:00. */
+export const CYCLE_SEC = 60;
+/** No entries in the first — or the last — this many seconds of a cycle. */
+export const ENTRY_MARGIN_SEC = 10;
 /** How many trailing one-second price points feed the volatility estimate. */
 export const HISTORY_SEC = 60;
 /** Monte Carlo paths per cycle. Fixed, not a setting. */
@@ -21,13 +23,16 @@ export const FUTURES_REST = 'https://fapi.binance.com';
 export const DEFAULT_CONFIG: Config = {
   autoTrade: false,
   killSwitch: false,
-  closeAtSecond: 19,
+  closeAtSecond: CYCLE_SEC - ENTRY_MARGIN_SEC,
   unlikeliness: 0.1, // trade when the model gives the current move less than a 10% chance
   stakeUsd: 20,
 };
 
 const BOUNDS = {
-  closeAtSecond: [1, CYCLE_SEC - 1],
+  // Entries are never allowed inside the last ENTRY_MARGIN_SEC seconds
+  // regardless of this setting (see engine.ts's considerTrade) — this just
+  // bounds how much earlier than that a position can be forced closed.
+  closeAtSecond: [ENTRY_MARGIN_SEC + 1, CYCLE_SEC - ENTRY_MARGIN_SEC],
   unlikeliness: [0.01, 0.4],
   stakeUsd: [1, 10_000],
 } as const;

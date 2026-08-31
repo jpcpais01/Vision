@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import type { Config } from '@/lib/types';
 import type { Health } from '@/components/EngineProvider';
-import { CYCLE_SEC } from '@/lib/config';
+import { CYCLE_SEC, ENTRY_MARGIN_SEC } from '@/lib/config';
 import { cx } from '@/lib/format';
 
 /** Four things. If a knob has no clear reason to be turned, it is not here. */
@@ -72,6 +72,11 @@ export function Settings({
             </button>
           </label>
 
+          <p className="text-[11px] leading-relaxed text-[var(--muted)]">
+            Trades can only open between second {ENTRY_MARGIN_SEC} and second {CYCLE_SEC - ENTRY_MARGIN_SEC} of each{' '}
+            {CYCLE_SEC}s cycle — never in the first or last {ENTRY_MARGIN_SEC}s.
+          </p>
+
           <Slider
             label="Flag when probability drops below"
             hint="How unlikely the current move has to be, versus the simulation, before it's a signal."
@@ -85,10 +90,10 @@ export function Settings({
 
           <Slider
             label="Close trades at second"
-            hint={`Force-close whatever's open this many seconds into the ${CYCLE_SEC}s cycle.`}
+            hint={`Force-close whatever's open this many seconds into the ${CYCLE_SEC}s cycle — capped at ${CYCLE_SEC - ENTRY_MARGIN_SEC}, the start of the no-entry margin.`}
             value={config.closeAtSecond}
-            min={1}
-            max={CYCLE_SEC - 1}
+            min={ENTRY_MARGIN_SEC + 1}
+            max={CYCLE_SEC - ENTRY_MARGIN_SEC}
             step={1}
             suffix="s"
             onChange={(v) => onChange({ closeAtSecond: v })}

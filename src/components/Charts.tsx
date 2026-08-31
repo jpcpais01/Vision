@@ -3,7 +3,7 @@
 import { useMemo } from 'react';
 import type { Direction, Tick } from '@/lib/types';
 import type { Band } from '@/lib/montecarlo';
-import { CYCLE_SEC } from '@/lib/config';
+import { CYCLE_SEC, ENTRY_MARGIN_SEC } from '@/lib/config';
 
 /** One chart. Hand-drawn SVG — no library, nothing to load. */
 
@@ -60,6 +60,7 @@ export function CycleChart({
   const line = pts.map((p, i) => `${i ? 'L' : 'M'} ${x(p.t).toFixed(1)} ${y(p.p).toFixed(1)}`).join(' ');
   const last = pts[pts.length - 1];
   const above = last.p > cycleStartPrice;
+  const entryX = xSec(ENTRY_MARGIN_SEC);
   const closeX = xSec(closeAtSecond);
 
   return (
@@ -79,6 +80,15 @@ export function CycleChart({
         stroke="currentColor"
         strokeOpacity="0.35"
         strokeDasharray="5 4"
+      />
+      <line
+        x1={entryX}
+        x2={entryX}
+        y1={pad.t}
+        y2={H - pad.b}
+        stroke="currentColor"
+        strokeOpacity="0.22"
+        strokeDasharray="3 3"
       />
       <line
         x1={closeX}

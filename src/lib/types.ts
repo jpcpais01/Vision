@@ -45,7 +45,7 @@ export interface Position {
   pnl: number | null;
 }
 
-/** One completed 20-second cycle, traded or not. */
+/** One completed cycle, traded or not. */
 export interface CycleRecord {
   id: string;
   strategyId: StrategyId;

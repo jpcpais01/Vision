@@ -8,25 +8,29 @@ live price, its real order book, and the simulation.
 
 ## How it works
 
-Every 20 seconds, on the wall clock (:00, :20, :40…), a fresh cycle begins —
-shared by every bot, computed once:
+Every 60 seconds, on the wall clock (:00, :01:00, :02:00…), a fresh cycle
+begins — shared by every bot, computed once:
 
 1. **Take the live price as the reference.** Whatever Binance's BTCUSDT
    perpetual trade stream last reported is this cycle's start price — never
    a separate fetch, never anything else.
 2. **Simulate 1,000 paths.** A driftless Monte Carlo: 1,000 random walks,
-   one second at a time, for the 20 seconds of the cycle, using the plain
+   one second at a time, for the 60 seconds of the cycle, using the plain
    realised volatility of the last 60 one-second price points. Unlike a
    single end-of-window probability, this keeps every path's price at every
    second of the cycle — not just where it might end up, but how far it
    should plausibly have gotten by any given second along the way.
-3. **Watch the live price against that distribution.** At every tick, check
-   what share of the simulated paths reached at least as far from the
-   start price, in the same direction, by that same second. That share is
-   falling as the move gets more extreme — a low number means the current
-   price is a rare draw from the model's own distribution right now. This
-   part — the simulation and the tail probability it produces — is identical
-   for every bot; nothing about it depends on which strategy is watching.
+3. **Watch the live price against that distribution — but only from second
+   10 to second 50.** No entries in the first 10 seconds (there's barely any
+   tape yet to react to) or the last 10 (no bot should ever be mid-decision
+   right as the next cycle is about to begin). Inside that window, at every
+   tick, check what share of the simulated paths reached at least as far
+   from the start price, in the same direction, by that same second. That
+   share is falling as the move gets more extreme — a low number means the
+   current price is a rare draw from the model's own distribution right now.
+   This part — the simulation and the tail probability it produces — is
+   identical for every bot; nothing about it depends on which strategy is
+   watching.
 4. **Each bot decides for itself once that gets unlikely enough.** Its own
    configured threshold, its own side of the bet:
    - **Reversion** bets *against* the move — the price has strayed further
@@ -39,7 +43,7 @@ shared by every bot, computed once:
    That one word — which side to take — is the entire difference between
    the two. At most one position open at a time, per bot.
 5. **Force-close before the cycle ends**, at each bot's own configured
-   second, whatever the price is doing by then.
+   second (never later than second 50), whatever the price is doing by then.
 
 ## Multiple bots, one market
 
@@ -99,7 +103,7 @@ until local time caught up to it.
 
 What's still not modelled: fees, leverage and liquidation risk (every
 position is sized as plain 1x notional exposure, not a margined bet), and
-funding rate accrual (real, but negligible over a hold of at most ~19
+funding rate accrual (real, but negligible over a hold of at most 40
 seconds).
 
 ## Setup
@@ -110,7 +114,7 @@ npm run dev
 ```
 
 No `.env.local` is required. Press **Start** on any strategy page — it
-connects to Binance and begins running 20-second cycles for every bot at
+connects to Binance and begins running 60-second cycles for every bot at
 once. Each bot's own **Trade automatically** stays off until you turn it
 on, so you can watch it decide first.
 
@@ -134,8 +138,15 @@ Per bot, four things, all on sliders or a toggle:
 - **Flag when probability drops below** — how unlikely the current move has
   to be, versus the simulation, before it's a signal (default 10%)
 - **Close trades at second** — force-close whatever's open this many seconds
-  into the 20-second cycle (default 19)
+  into the 60-second cycle (default 50, and capped there — see below)
 - **Stake per trade** — fixed USD amount per position (default $20)
+
+Entries are never allowed in the first or last 10 seconds of a cycle,
+regardless of these settings — not a setting, a fixed rule (`ENTRY_MARGIN_SEC`
+in `src/lib/config.ts`). The first 10 seconds barely have any tape to react
+to yet; the last 10 exist so no bot is ever mid-decision right as the next
+cycle begins. **Close trades at second** can be pulled earlier than 50, but
+never later.
 
 **Stop all** in the header is global — every bot, immediately. Resetting one
 bot's own stop (shown once that bot is stopped) only re-arms that one.
@@ -149,7 +160,7 @@ src/lib/
   binanceBook.ts       real futures order-book depth, lot-size rounding, and the paper fill model
   series.ts             one-second price sampling and realised volatility
   montecarlo.ts          the driftless Monte Carlo — full-cycle path simulation, shared by every bot
-  engine.ts               the 20-second cycle loop, running every bot off the one shared simulation
+  engine.ts               the 60-second cycle loop, running every bot off the one shared simulation
   store.ts                 per-bot position and cycle history
 src/app/
   [strategy]/            one route per bot — /reversion, /momentum

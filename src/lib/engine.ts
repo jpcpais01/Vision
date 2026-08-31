@@ -1,5 +1,5 @@
 import type { Config, CycleRecord, Direction, LogLine, Position, Stats, StrategyId, Tick } from './types';
-import { CYCLE_SEC, DEFAULT_CONFIG, FUTURES_REST, HISTORY_SEC, PATHS, SYMBOL } from './config';
+import { CYCLE_SEC, DEFAULT_CONFIG, ENTRY_MARGIN_SEC, FUTURES_REST, HISTORY_SEC, PATHS, SYMBOL } from './config';
 import { STRATEGIES, directionFor } from './strategies';
 import { volatility } from './series';
 import { bandFromDistribution, simulateCycle, tailProbability, type Band, type CycleDistribution } from './montecarlo';
@@ -22,17 +22,20 @@ import { BinanceFeed } from './binanceFeed';
  * decision — `directionFor()` in strategies.ts — is the entire difference
  * between them.
  *
- *   1. Every 20-second slot of the wall clock (:00, :20, :40…), take the
- *      price right now as the cycle's reference and simulate `PATHS` random
- *      walks forward, one second at a time, using the realised volatility of
- *      the last `HISTORY_SEC` one-second price points.
- *   2. For the rest of the cycle, each bot independently checks the live
- *      price against what the simulation says is plausible at that exact
- *      second. When it's less likely than that bot's own threshold, that's
- *      its signal.
+ *   1. Every `CYCLE_SEC`-second slot of the wall clock (:00, :01:00, :02:00…),
+ *      take the price right now as the cycle's reference and simulate
+ *      `PATHS` random walks forward, one second at a time, using the
+ *      realised volatility of the last `HISTORY_SEC` one-second price
+ *      points.
+ *   2. From `ENTRY_MARGIN_SEC` seconds in — never before, so there's a real
+ *      tape to react to — each bot independently checks the live price
+ *      against what the simulation says is plausible at that exact second.
+ *      When it's less likely than that bot's own threshold, that's its
+ *      signal.
  *   3. Force-close whatever's open at each bot's own configured second,
- *      before the next cycle begins. At most one position open at a time,
- *      per bot.
+ *      never later than `ENTRY_MARGIN_SEC` seconds before the cycle ends —
+ *      no bot is ever mid-decision right as the next cycle is about to
+ *      begin. At most one position open at a time, per bot.
  *
  * Every fill — open and close — is priced by walking Binance's real resting
  * depth, so paper trading reports the same slippage a live order would see.
@@ -424,6 +427,10 @@ export class Engine {
     }
     if (!bot.config.autoTrade) {
       bot.skipReason = 'auto-trade off';
+      return;
+    }
+    if (elapsedSec < ENTRY_MARGIN_SEC) {
+      bot.skipReason = 'too early in this cycle';
       return;
     }
     if (elapsedSec >= bot.config.closeAtSecond) {

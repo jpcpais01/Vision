@@ -4,7 +4,7 @@ import { quantileSorted } from './math/stats';
 /**
  * ── The only model ───────────────────────────────────────────────────────────
  *
- * A driftless Monte Carlo, run fresh at the start of every 20-second cycle: no
+ * A driftless Monte Carlo, run fresh at the start of every cycle: no
  * view is taken on direction. `paths` random walks are simulated forward from
  * the price right now, one step per second, using the realised volatility of
  * the last `HISTORY_SEC` one-second price points. Unlike a single-horizon
