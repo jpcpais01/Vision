@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useEngine } from '@/hooks/useEngine';
-import { CYCLE_SEC, HISTORY_SEC } from '@/lib/config';
+import { CYCLE_SEC, HISTORY_SEC, TAKER_FEE_RATE } from '@/lib/config';
 import { CycleChart } from '@/components/Charts';
 import { Settings } from '@/components/Settings';
 import { clock, cx, pct, signed, time, usd } from '@/lib/format';
@@ -307,9 +307,10 @@ export default function App() {
 function PositionRead({ position, price }: { position: Position; price: number | null }) {
   const unrealized =
     price !== null
-      ? position.direction === 'LONG'
-        ? (price - position.openPrice) * position.qty
-        : (position.openPrice - price) * position.qty
+      ? (position.direction === 'LONG'
+          ? (price - position.openPrice) * position.qty
+          : (position.openPrice - price) * position.qty) -
+        (position.openPrice + price) * position.qty * TAKER_FEE_RATE
       : null;
   return (
     <>
@@ -318,7 +319,7 @@ function PositionRead({ position, price }: { position: Position; price: number |
       </div>
       <div className="mt-0.5 text-xs text-[var(--muted)]">
         {position.qty.toFixed(5)} BTC at {usd(position.openPrice)}
-        {unrealized !== null ? ` · ${signed(unrealized)} unrealised` : ''}
+        {unrealized !== null ? ` · ${signed(unrealized)} unrealised, after fees` : ''}
       </div>
     </>
   );

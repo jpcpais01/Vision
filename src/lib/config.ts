@@ -9,6 +9,18 @@ export const PATHS = 10_000;
 
 export const SYMBOL = 'BTCUSDT';
 
+/**
+ * Binance USD-M futures, not spot. Spot cannot sell short without borrowed
+ * margin — a real SHORT position, symmetric with LONG, needs a market that
+ * actually supports both, so every fetch below is against the futures book
+ * and its own fee schedule, not spot's.
+ */
+export const FUTURES_WS = 'wss://fstream.binance.com';
+export const FUTURES_REST = 'https://fapi.binance.com';
+
+/** Standard non-discounted USD-M futures taker fee (VIP 0, no BNB discount): 0.05% per side. */
+export const TAKER_FEE_RATE = 0.0005;
+
 export const DEFAULT_CONFIG: Config = {
   autoTrade: false,
   killSwitch: false,

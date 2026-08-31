@@ -1,9 +1,13 @@
 import type { Book } from './types';
-import { SYMBOL } from './config';
+import { FUTURES_REST, SYMBOL } from './config';
 
 /** Order-book helpers. Pure, so the same maths prices every paper fill. */
 
-const DEPTH_URL = `https://api.binance.com/api/v3/depth?symbol=${SYMBOL}&limit=100`;
+const DEPTH_URL = `${FUTURES_REST}/fapi/v1/depth?symbol=${SYMBOL}&limit=100`;
+const EXCHANGE_INFO_URL = `${FUTURES_REST}/fapi/v1/exchangeInfo`;
+
+/** Typical Binance API round-trip plus order-processing time, in ms. */
+const ORDER_LATENCY_MS = 150;
 
 /**
  * Fetched directly from the browser, same as the live tick stream —
@@ -19,6 +23,22 @@ export async function fetchBook(): Promise<Book | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * The book a real order would actually land against — not the instant of
+ * the trading decision, but the market after the same round-trip latency a
+ * real order placement would take. A market order does not fill against the
+ * book as it looked the moment you decided to trade; it fills against
+ * however the book looks once the order actually reaches the exchange.
+ */
+export async function fetchBookForFill(): Promise<Book | null> {
+  await sleep(ORDER_LATENCY_MS);
+  return fetchBook();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function parseBinanceDepth(raw: unknown): Book {
@@ -39,13 +59,66 @@ export function quote(book: Book | null | undefined): { bid: number | null; ask:
   return { bid: book.bids[0]?.price ?? null, ask: book.asks[0]?.price ?? null };
 }
 
+// ── Exchange precision ──────────────────────────────────────────────────────
+
+export interface SymbolFilters {
+  tickSize: number;
+  stepSize: number;
+}
+
+let filtersCache: SymbolFilters | null = null;
+let filtersPromise: Promise<SymbolFilters | null> | null = null;
+
+/**
+ * The exact quantity/price increments a real order must land on. Fetched
+ * once and cached — these do not change during a session, and every fill
+ * afterward rounds its quantity down to a lot Binance would actually accept.
+ */
+export async function symbolFilters(): Promise<SymbolFilters | null> {
+  if (filtersCache) return filtersCache;
+  if (!filtersPromise) {
+    filtersPromise = (async () => {
+      try {
+        const res = await fetch(`${EXCHANGE_INFO_URL}?symbol=${SYMBOL}`, { cache: 'no-store' });
+        if (!res.ok) return null;
+        const data = (await res.json()) as {
+          symbols?: { filters?: { filterType?: string; tickSize?: string; stepSize?: string }[] }[];
+        };
+        const filters = data.symbols?.[0]?.filters ?? [];
+        const tickSize = Number(filters.find((f) => f.filterType === 'PRICE_FILTER')?.tickSize);
+        const stepSize = Number(filters.find((f) => f.filterType === 'LOT_SIZE')?.stepSize);
+        if (!(tickSize > 0) || !(stepSize > 0)) return null;
+        filtersCache = { tickSize, stepSize };
+        return filtersCache;
+      } catch {
+        return null;
+      } finally {
+        filtersPromise = null;
+      }
+    })();
+  }
+  return filtersPromise;
+}
+
+function roundDownToStep(qty: number, step?: number): number {
+  if (!step || !(step > 0)) return qty;
+  return Math.floor(qty / step) * step;
+}
+
 /**
  * Open a position sized in USD: walks real resting depth, consuming levels
  * one at a time, and reports a short fill when the book runs out rather than
  * inventing liquidity that was not there. Buying (LONG) walks the asks;
- * selling (SHORT) walks the bids.
+ * selling (SHORT) walks the bids. The filled quantity is rounded down to a
+ * real lot size when one is supplied, since a live order could not land on
+ * anything finer.
  */
-export function fillUsd(book: Book | null, side: 'BUY' | 'SELL', usd: number): { qty: number; price: number } {
+export function fillUsd(
+  book: Book | null,
+  side: 'BUY' | 'SELL',
+  usd: number,
+  stepSize?: number
+): { qty: number; price: number } {
   const levels = book ? (side === 'BUY' ? book.asks : book.bids) : [];
   if (levels.length === 0 || usd <= 0) return { qty: 0, price: 0 };
 
@@ -60,14 +133,22 @@ export function fillUsd(book: Book | null, side: 'BUY' | 'SELL', usd: number): {
     cost += takeUsd;
     leftUsd -= takeUsd;
   }
-  return qty > 0 ? { qty, price: cost / qty } : { qty: 0, price: 0 };
+  if (qty <= 0) return { qty: 0, price: 0 };
+  const price = cost / qty;
+  const rounded = roundDownToStep(qty, stepSize);
+  return rounded > 0 ? { qty: rounded, price } : { qty: 0, price: 0 };
 }
 
 /**
  * Close a position sized in BTC: same pessimistic walk, but by quantity
  * rather than USD, since a close must exit the exact size that was opened.
  */
-export function fillQty(book: Book | null, side: 'BUY' | 'SELL', qty: number): { qty: number; price: number } {
+export function fillQty(
+  book: Book | null,
+  side: 'BUY' | 'SELL',
+  qty: number,
+  stepSize?: number
+): { qty: number; price: number } {
   const levels = book ? (side === 'BUY' ? book.asks : book.bids) : [];
   if (levels.length === 0 || qty <= 0) return { qty: 0, price: 0 };
 
@@ -81,5 +162,8 @@ export function fillQty(book: Book | null, side: 'BUY' | 'SELL', qty: number): {
     got += take;
     left -= take;
   }
-  return got > 0 ? { qty: got, price: cost / got } : { qty: 0, price: 0 };
+  if (got <= 0) return { qty: 0, price: 0 };
+  const price = cost / got;
+  const rounded = roundDownToStep(got, stepSize);
+  return rounded > 0 ? { qty: rounded, price } : { qty: 0, price: 0 };
 }

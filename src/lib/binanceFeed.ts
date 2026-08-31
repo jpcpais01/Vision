@@ -1,24 +1,25 @@
 import type { Tick } from './types';
+import { FUTURES_WS, SYMBOL } from './config';
 
 /**
- * ── Binance — live trade stream ──────────────────────────────────────────────
+ * ── Binance USD-M futures — live trade stream ────────────────────────────────
  *
- * Binance's public WebSocket, free and no key, streaming every executed
- * trade on BTCUSDT in real time — genuinely continuous, sub-second updates.
- * This is the strategy's own reference tape: unlike the old design, there is
- * no external settlement price to chase or reconstruct — Binance's live
- * price *is* the thing the simulation and every trade are measured against.
+ * Binance's public WebSocket, free and no key, streaming aggregated trades on
+ * the BTCUSDT perpetual in real time. Futures, not spot — see config.ts for
+ * why: a SHORT position here needs to be genuinely placeable with real money,
+ * and spot cannot sell short without borrowed margin.
  *
- * Confirmed against Binance's own `binance-spot-api-docs` source on GitHub
- * (web-socket-streams.md): the base URL, the `<symbol>@trade` stream name,
- * and the trade event shape (`p` = price, `T` = trade time in ms) below are
- * taken directly from it.
+ * Confirmed against Binance's own USD-M futures WebSocket market-streams
+ * documentation: futures only publishes `@aggTrade` (trades aggregated over
+ * up to 100ms at the same price and taking side), not the raw `@trade`
+ * stream spot has — the endpoint, the stream name, and the event shape
+ * (`p` = price, `T` = trade time in ms) below are taken directly from it.
  */
 
-const URL = 'wss://stream.binance.com:9443/ws/btcusdt@trade';
+const URL = `${FUTURES_WS}/ws/${SYMBOL.toLowerCase()}@aggTrade`;
 const BACKOFF_MS = [1000, 2000, 5000, 10000, 20000];
 
-interface TradeEvent {
+interface AggTradeEvent {
   e?: string;
   p?: string;
   T?: number;
@@ -94,13 +95,13 @@ export class BinanceFeed {
 
       ws.onmessage = (event) => {
         if (typeof event.data !== 'string') return;
-        let parsed: TradeEvent;
+        let parsed: AggTradeEvent;
         try {
-          parsed = JSON.parse(event.data) as TradeEvent;
+          parsed = JSON.parse(event.data) as AggTradeEvent;
         } catch {
           return;
         }
-        if (parsed.e !== 'trade' || typeof parsed.p !== 'string') return;
+        if (parsed.e !== 'aggTrade' || typeof parsed.p !== 'string') return;
         const price = Number(parsed.p);
         if (!Number.isFinite(price) || price <= 0) return;
 

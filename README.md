@@ -29,26 +29,47 @@ Every 20 seconds, on the wall clock (:00, :20, :40…), a fresh cycle begins:
 5. **Force-close before the cycle ends**, at the configured second, whatever
    the price is doing by then.
 
-## About the price feed
+## About the price feed and the fills
 
-Every price in this app — the cycle's reference, the running display, the
-volatility estimate — comes from Binance's public trade stream
-(`wss://stream.binance.com:9443/ws/btcusdt@trade`), free and with no key,
-streaming every executed BTCUSDT trade in real time. A REST poll of
-Binance's own ticker is the only fallback, used only when the stream has
-nothing fresh. No other exchange or index is ever blended in.
+Everything here is **Binance USD-M futures**, not spot — deliberately.
+Spot cannot sell short without borrowed margin, and this strategy needs
+SHORT to be exactly as real as LONG. Every price — the cycle's reference,
+the running display, the volatility estimate — comes from the BTCUSDT
+perpetual's public trade stream (`wss://fstream.binance.com/ws/btcusdt@aggTrade`),
+free and with no key. A REST poll of the futures ticker is the only
+fallback, used only when the stream has nothing fresh. No other exchange,
+market, or index is ever blended in.
 
-Every simulated fill — opening and closing a position — is priced by
-walking Binance's real resting depth (`/api/v3/depth`), consuming levels one
-at a time and reporting a short fill when the book runs out rather than
-inventing liquidity that wasn't there. Paper trading, but priced exactly the
-way a live order would be.
+Paper trading, but every fill is priced the way a real order actually
+would be, not approximated:
 
-Every one of these calls — the tick stream, the ticker fallback, and the
-order-book fetch — goes straight from the browser to `binance.com`, never
-through this app's own server. Binance's REST API returns 451 for requests
-from US-based server IPs, which is where a Vercel serverless function runs
-by default; a real browser's own connection isn't affected.
+- **Real resting depth.** Every open and close walks the futures book
+  (`/fapi/v1/depth`) level by level, consuming size and reporting a short
+  fill when the book runs out rather than inventing liquidity that wasn't
+  there.
+- **Real order latency.** A market order doesn't fill against the book as
+  it looked the instant you decided to trade — it fills against however
+  the book looks once the order actually reaches the exchange. Every fill
+  fetches the book after the same ~150ms a real order round trip would
+  take, not at the instant of the signal.
+- **Real lot sizes.** Every filled quantity is rounded down to Binance's
+  own `LOT_SIZE` step for BTCUSDT (fetched from `/fapi/v1/exchangeInfo`
+  and cached), the same precision a live order would be forced onto —
+  never a fractional size no real order could land on.
+- **Real fees.** Every open and close pays Binance's standard USD-M
+  futures taker fee (0.05% per side, no VIP tier or BNB discount assumed)
+  against the notional value of the fill, deducted from the recorded P&L.
+
+Every one of these calls — the tick stream, the ticker fallback, the
+order-book fetch, `exchangeInfo` — goes straight from the browser to
+`binance.com`, never through this app's own server. Binance's REST API
+returns 451 for requests from US-based server IPs, which is where a
+Vercel serverless function runs by default; a real browser's own
+connection isn't affected.
+
+What's still not modelled: leverage and liquidation risk (every position
+is sized as plain 1x notional exposure, not a margined bet), and funding
+rate accrual (real, but negligible over a hold of at most ~19 seconds).
 
 ## Setup
 
@@ -88,8 +109,8 @@ Four things, all on sliders or a toggle:
 
 ```
 src/lib/
-  binanceFeed.ts    the only price source — Binance's live trade stream (browser WebSocket)
-  binanceBook.ts     real order-book depth, and the paper fill model
+  binanceFeed.ts    the only price source — Binance futures' live trade stream (browser WebSocket)
+  binanceBook.ts     real futures order-book depth, lot-size rounding, and the paper fill model
   series.ts           one-second price sampling and realised volatility
   montecarlo.ts        the driftless Monte Carlo — full-cycle path simulation
   engine.ts             the 20-second cycle loop
@@ -105,13 +126,14 @@ src/components/       the app
 npm test
 ```
 
-15 tests, no network needed. The ones that matter: the simulated tail
+16 tests, no network needed. The ones that matter: the simulated tail
 probability matches the closed-form lognormal tail; it sits at ~50% right at
 the start price and falls as a move gets more extreme; the simulated
 probability band widens over time and always brackets the start price;
 volatility recovers a known sigma from a realised one-second tape and never
 collapses to zero with no data; a paper fill walks real depth on both sides
-(USD-sized to open, quantity-sized to close) and reports shortfalls honestly.
+(USD-sized to open, quantity-sized to close) and reports shortfalls honestly;
+a filled quantity is rounded down to a real lot size, never up.
 
 ## Known limits
 
@@ -120,6 +142,8 @@ collapses to zero with no data; a paper fill walks real depth on both sides
 - **If Binance's stream ever drops**, a REST poll of the ticker price stands
   in until it reconnects — still genuine, just slower to update.
 - **This is paper trading only.** There is no live order path in this app.
+- **Leverage and liquidation risk aren't modelled.** Every position is a
+  plain 1x notional exposure, not a margined bet.
 - **The edge may not exist.** Mean reversion on a 20-second Bitcoin window is
   a real but well-picked-over idea. Run it and look at the numbers before
   assuming anything.

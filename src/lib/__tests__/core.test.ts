@@ -151,6 +151,16 @@ test('closing walks the book by exact quantity, buy side for a short, sell side 
   assert.equal(short.qty, 0);
 });
 
+test('a filled quantity is rounded down to a real lot size, never up', () => {
+  // 0.15 BTC does not land on a 0.02 step — a live order could only ever get 0.14.
+  const usd = 100_050 * 0.1 + 100_100 * 0.05;
+  const f = fillUsd(book, 'BUY', usd, 0.02);
+  assert.ok(Math.abs(f.qty - 0.14) < 1e-9, `got ${f.qty}`);
+
+  // Rounding to below one full step reports no fill, not a fake sliver.
+  assert.equal(fillQty(book, 'SELL', 0.004, 0.01).qty, 0);
+});
+
 // ── Config ──────────────────────────────────────────────────────────────────
 
 test('config is clamped on write', () => {
