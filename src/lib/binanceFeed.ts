@@ -13,7 +13,14 @@ import { FUTURES_WS, SYMBOL } from './config';
  * documentation: futures only publishes `@aggTrade` (trades aggregated over
  * up to 100ms at the same price and taking side), not the raw `@trade`
  * stream spot has — the endpoint, the stream name, and the event shape
- * (`p` = price, `T` = trade time in ms) below are taken directly from it.
+ * (`p` = price) below are taken directly from it.
+ *
+ * Every tick is timestamped with the local clock at the moment it's
+ * received, not Binance's own embedded trade time — the engine buckets
+ * ticks into cycles against `Date.now()`, so timestamping against a
+ * different clock (server time, which can drift from local time, or simply
+ * lag behind if this device's JS thread was briefly busy) would silently
+ * filter fresh ticks out of the current cycle until local time caught up.
  */
 
 const URL = `${FUTURES_WS}/ws/${SYMBOL.toLowerCase()}@aggTrade`;
@@ -22,7 +29,6 @@ const BACKOFF_MS = [1000, 2000, 5000, 10000, 20000];
 interface AggTradeEvent {
   e?: string;
   p?: string;
-  T?: number;
 }
 
 export interface BinanceFeedOptions {
@@ -105,7 +111,7 @@ export class BinanceFeed {
         const price = Number(parsed.p);
         if (!Number.isFinite(price) || price <= 0) return;
 
-        const tick: Tick = { t: typeof parsed.T === 'number' ? parsed.T : Date.now(), p: price };
+        const tick: Tick = { t: Date.now(), p: price };
         this.lastTick = tick;
         this.opts.onTick(tick);
       };

@@ -6,14 +6,17 @@ import { FUTURES_REST, SYMBOL } from './config';
 const DEPTH_URL = `${FUTURES_REST}/fapi/v1/depth?symbol=${SYMBOL}&limit=100`;
 const EXCHANGE_INFO_URL = `${FUTURES_REST}/fapi/v1/exchangeInfo`;
 
-/** Typical Binance API round-trip plus order-processing time, in ms. */
-const ORDER_LATENCY_MS = 150;
-
 /**
  * Fetched directly from the browser, same as the live tick stream —
  * Binance's REST API returns 451 for requests from US-based server IPs,
  * which is where a Vercel serverless function runs by default, while a
  * real browser's own connection is unaffected.
+ *
+ * This fetch's own real round-trip time already is the delay between the
+ * trading decision and the book a real order would land against — an
+ * earlier version of this also added an artificial delay on top, which
+ * just double-counted latency and made every fill stale by however long
+ * both waits happened to add up to.
  */
 export async function fetchBook(): Promise<Book | null> {
   try {
@@ -23,22 +26,6 @@ export async function fetchBook(): Promise<Book | null> {
   } catch {
     return null;
   }
-}
-
-/**
- * The book a real order would actually land against — not the instant of
- * the trading decision, but the market after the same round-trip latency a
- * real order placement would take. A market order does not fill against the
- * book as it looked the moment you decided to trade; it fills against
- * however the book looks once the order actually reaches the exchange.
- */
-export async function fetchBookForFill(): Promise<Book | null> {
-  await sleep(ORDER_LATENCY_MS);
-  return fetchBook();
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function parseBinanceDepth(raw: unknown): Book {

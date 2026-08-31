@@ -14,14 +14,14 @@ shared by every bot, computed once:
 1. **Take the live price as the reference.** Whatever Binance's BTCUSDT
    perpetual trade stream last reported is this cycle's start price — never
    a separate fetch, never anything else.
-2. **Simulate 10,000 paths.** A driftless Monte Carlo: 10,000 random walks,
+2. **Simulate 1,000 paths.** A driftless Monte Carlo: 1,000 random walks,
    one second at a time, for the 20 seconds of the cycle, using the plain
    realised volatility of the last 60 one-second price points. Unlike a
    single end-of-window probability, this keeps every path's price at every
    second of the cycle — not just where it might end up, but how far it
    should plausibly have gotten by any given second along the way.
 3. **Watch the live price against that distribution.** At every tick, check
-   what share of the 10,000 simulated paths reached at least as far from the
+   what share of the simulated paths reached at least as far from the
    start price, in the same direction, by that same second. That share is
    falling as the move gets more extreme — a low number means the current
    price is a rare draw from the model's own distribution right now. This
@@ -68,25 +68,21 @@ free and with no key. A REST poll of the futures ticker is the only
 fallback, used only when the stream has nothing fresh. No other exchange,
 market, or index is ever blended in.
 
-Paper trading, but every fill is priced the way a real order actually
-would be, not approximated:
+Paper trading, but every fill is priced against the real market, not
+approximated:
 
 - **Real resting depth.** Every open and close walks the futures book
   (`/fapi/v1/depth`) level by level, consuming size and reporting a short
   fill when the book runs out rather than inventing liquidity that wasn't
-  there.
-- **Real order latency.** A market order doesn't fill against the book as
-  it looked the instant you decided to trade — it fills against however
-  the book looks once the order actually reaches the exchange. Every fill
-  fetches the book after the same ~150ms a real order round trip would
-  take, not at the instant of the signal.
+  there. The fetch is made fresh at the moment of the decision — its own
+  real round-trip time already is the delay between deciding to trade and
+  the book an order would actually land against, so nothing artificial is
+  added on top of it.
 - **Real lot sizes.** Every filled quantity is rounded down to Binance's
   own `LOT_SIZE` step for BTCUSDT (fetched from `/fapi/v1/exchangeInfo`
   and cached), the same precision a live order would be forced onto —
   never a fractional size no real order could land on.
-- **Real fees.** Every open and close pays Binance's standard USD-M
-  futures taker fee (0.05% per side, no VIP tier or BNB discount assumed)
-  against the notional value of the fill, deducted from the recorded P&L.
+- **No fees.** Not modelled — every reported P&L is gross.
 
 Every one of these calls — the tick stream, the ticker fallback, the
 order-book fetch, `exchangeInfo` — goes straight from the browser to
@@ -95,9 +91,16 @@ returns 451 for requests from US-based server IPs, which is where a
 Vercel serverless function runs by default; a real browser's own
 connection isn't affected.
 
-What's still not modelled: leverage and liquidation risk (every position
-is sized as plain 1x notional exposure, not a margined bet), and funding
-rate accrual (real, but negligible over a hold of at most ~19 seconds).
+Every price tick is timestamped against the local clock at the moment
+it's received, not Binance's own embedded trade time — the engine buckets
+ticks into cycles against the same local clock, so timestamping against a
+different one would silently filter fresh ticks out of the current cycle
+until local time caught up to it.
+
+What's still not modelled: fees, leverage and liquidation risk (every
+position is sized as plain 1x notional exposure, not a margined bet), and
+funding rate accrual (real, but negligible over a hold of at most ~19
+seconds).
 
 ## Setup
 
@@ -181,8 +184,9 @@ reversion and momentum take opposite sides of the same unlikely move.
 - **If Binance's stream ever drops**, a REST poll of the ticker price stands
   in until it reconnects — still genuine, just slower to update.
 - **This is paper trading only.** There is no live order path in this app.
-- **Leverage and liquidation risk aren't modelled.** Every position is a
-  plain 1x notional exposure, not a margined bet.
+- **Fees, leverage, and liquidation risk aren't modelled.** Every reported
+  P&L is gross, and every position is a plain 1x notional exposure, not a
+  margined bet.
 - **The edge may not exist, for either strategy.** They cannot both be right
   about the same move — that's the point of running them side by side. Watch
   the numbers before assuming either one.

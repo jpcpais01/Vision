@@ -4,22 +4,19 @@ import type { Config } from './types';
 export const CYCLE_SEC = 20;
 /** How many trailing one-second price points feed the volatility estimate. */
 export const HISTORY_SEC = 60;
-/** Monte Carlo paths per cycle. Fixed, not a setting — the spec is exact about this number. */
-export const PATHS = 10_000;
+/** Monte Carlo paths per cycle. Fixed, not a setting. */
+export const PATHS = 1_000;
 
 export const SYMBOL = 'BTCUSDT';
 
 /**
  * Binance USD-M futures, not spot. Spot cannot sell short without borrowed
  * margin — a real SHORT position, symmetric with LONG, needs a market that
- * actually supports both, so every fetch below is against the futures book
- * and its own fee schedule, not spot's.
+ * actually supports both, so every fetch below is against the futures book,
+ * not spot's.
  */
 export const FUTURES_WS = 'wss://fstream.binance.com';
 export const FUTURES_REST = 'https://fapi.binance.com';
-
-/** Standard non-discounted USD-M futures taker fee (VIP 0, no BNB discount): 0.05% per side. */
-export const TAKER_FEE_RATE = 0.0005;
 
 export const DEFAULT_CONFIG: Config = {
   autoTrade: false,

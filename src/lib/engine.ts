@@ -1,9 +1,9 @@
 import type { Config, CycleRecord, Direction, LogLine, Position, Stats, StrategyId, Tick } from './types';
-import { CYCLE_SEC, DEFAULT_CONFIG, FUTURES_REST, HISTORY_SEC, PATHS, SYMBOL, TAKER_FEE_RATE } from './config';
+import { CYCLE_SEC, DEFAULT_CONFIG, FUTURES_REST, HISTORY_SEC, PATHS, SYMBOL } from './config';
 import { STRATEGIES, directionFor } from './strategies';
 import { volatility } from './series';
 import { bandFromDistribution, simulateCycle, tailProbability, type Band, type CycleDistribution } from './montecarlo';
-import { fetchBookForFill, fillQty, fillUsd, symbolFilters } from './binanceBook';
+import { fetchBook, fillQty, fillUsd, symbolFilters } from './binanceBook';
 import { BinanceFeed } from './binanceFeed';
 
 /**
@@ -427,7 +427,7 @@ export class Engine {
     bot.busy = 'opening';
     this.emit(true);
     try {
-      const [book, filters] = await Promise.all([fetchBookForFill(), symbolFilters()]);
+      const [book, filters] = await Promise.all([fetchBook(), symbolFilters()]);
       const f = fillUsd(book, direction === 'LONG' ? 'BUY' : 'SELL', bot.config.stakeUsd, filters?.stepSize);
       if (f.qty <= 0) {
         this.botLog(strategyId, 'warn', 'No liquidity for a simulated fill');
@@ -471,18 +471,14 @@ export class Engine {
     bot.busy = 'closing';
     this.emit(true);
     try {
-      const [book, filters] = await Promise.all([fetchBookForFill(), symbolFilters()]);
+      const [book, filters] = await Promise.all([fetchBook(), symbolFilters()]);
       const f = fillQty(book, open.direction === 'LONG' ? 'SELL' : 'BUY', open.qty, filters?.stepSize);
       const closePrice = f.qty > 0 ? f.price : (this.price ?? open.openPrice);
       const closedQty = f.qty > 0 ? f.qty : open.qty;
-      const gross =
+      const pnl =
         open.direction === 'LONG'
           ? (closePrice - open.openPrice) * closedQty
           : (open.openPrice - closePrice) * closedQty;
-      // Real futures taker fees, both legs — charged in USDT against the
-      // notional value of each fill, not against the contract quantity.
-      const fees = (open.qty * open.openPrice + closedQty * closePrice) * TAKER_FEE_RATE;
-      const pnl = gross - fees;
       const closed: Position = { ...open, status: 'CLOSED', closedAt: Date.now(), closePrice, pnl };
       bot.positions = bot.positions.map((p) => (p.id === closed.id ? closed : p));
       bot.pendingPositions.set(closed.id, closed);
@@ -490,8 +486,8 @@ export class Engine {
       this.botLog(
         strategyId,
         'trade',
-        `${pnl >= 0 ? 'WON' : 'LOST'} — closed ${open.direction} at $${closePrice.toFixed(2)} (${reason}), ` +
-          `${fees.toFixed(2)} in fees. ${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`
+        `${pnl >= 0 ? 'WON' : 'LOST'} — closed ${open.direction} at $${closePrice.toFixed(2)} (${reason}). ` +
+          `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`
       );
     } catch (err) {
       this.botLog(strategyId, 'error', `Close failed: ${msg(err)}`);
