@@ -23,46 +23,58 @@
   --warn: #8a6100;
   --warn-bg: #fdf2dc;
   --shadow: 0 1px 2px rgba(16, 22, 35, 0.04), 0 6px 20px -12px rgba(16, 22, 35, 0.16);
+  --glow-up: 0 0 0 rgba(0, 0, 0, 0);
+  --glow-down: 0 0 0 rgba(0, 0, 0, 0);
+  --glow-accent: 0 0 0 rgba(0, 0, 0, 0);
+  --scanline-opacity: 0;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
     color-scheme: dark;
-    --bg: #0b0e14;
-    --card: #141922;
-    --line: #232b38;
-    --chip: #1c232e;
-    --text: #e6ebf3;
-    --muted: #8b96a7;
-    --accent: #5b9bf0;
-    --accent-bg: #16273f;
-    --up: #2aa87b;
-    --up-bg: #10302579;
-    --down: #e2716c;
-    --down-bg: #35201f;
-    --warn: #d9a441;
-    --warn-bg: #2f2612;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -16px rgba(0, 0, 0, 0.8);
+    --bg: #05070a;
+    --card: #0e131c;
+    --line: #202a3a;
+    --chip: #161d29;
+    --text: #eaf1fb;
+    --muted: #7c8aa0;
+    --accent: #4fd6ff;
+    --accent-bg: #0f2b38;
+    --up: #35e08a;
+    --up-bg: #0d2b1e;
+    --down: #ff5d7a;
+    --down-bg: #331420;
+    --warn: #f5c04d;
+    --warn-bg: #2e2409;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px -16px rgba(0, 0, 0, 0.9);
+    --glow-up: 0 0 16px rgba(53, 224, 138, 0.45);
+    --glow-down: 0 0 16px rgba(255, 93, 122, 0.45);
+    --glow-accent: 0 0 18px rgba(79, 214, 255, 0.4);
+    --scanline-opacity: 0.05;
   }
 }
 
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --bg: #0b0e14;
-  --card: #141922;
-  --line: #232b38;
-  --chip: #1c232e;
-  --text: #e6ebf3;
-  --muted: #8b96a7;
-  --accent: #5b9bf0;
-  --accent-bg: #16273f;
-  --up: #2aa87b;
-  --up-bg: #10302579;
-  --down: #e2716c;
-  --down-bg: #35201f;
-  --warn: #d9a441;
-  --warn-bg: #2f2612;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -16px rgba(0, 0, 0, 0.8);
+  --bg: #05070a;
+  --card: #0e131c;
+  --line: #202a3a;
+  --chip: #161d29;
+  --text: #eaf1fb;
+  --muted: #7c8aa0;
+  --accent: #4fd6ff;
+  --accent-bg: #0f2b38;
+  --up: #35e08a;
+  --up-bg: #0d2b1e;
+  --down: #ff5d7a;
+  --down-bg: #331420;
+  --warn: #f5c04d;
+  --warn-bg: #2e2409;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px -16px rgba(0, 0, 0, 0.9);
+  --glow-up: 0 0 16px rgba(53, 224, 138, 0.45);
+  --glow-down: 0 0 16px rgba(255, 93, 122, 0.45);
+  --glow-accent: 0 0 18px rgba(79, 214, 255, 0.4);
+  --scanline-opacity: 0.05;
 }
 
 * {
@@ -83,6 +95,25 @@ body {
   letter-spacing: -0.01em;
 }
 
+/* A fixed, non-interactive scanline texture — nearly invisible in light mode
+   (--scanline-opacity is 0 there), a faint CRT hum in dark mode. One element,
+   reused everywhere via .scanlines rather than redrawn per surface. */
+.scanlines {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.6) 0px,
+    rgba(255, 255, 255, 0.6) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  opacity: var(--scanline-opacity);
+  mix-blend-mode: overlay;
+}
+
 @layer components {
   .card {
     background: var(--card);
@@ -97,6 +128,42 @@ body {
     letter-spacing: 0.07em;
     text-transform: uppercase;
     color: var(--muted);
+  }
+
+  /* A compact scoreboard tile for the HUD strip — the retro, gamified reading
+     of a stat: a tiny uppercase label over a big glowing mono number. */
+  .hud-tile {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--card);
+    padding: 6px 10px;
+    min-width: 0;
+  }
+  .hud-tile-up {
+    border-color: var(--up);
+    box-shadow: var(--glow-up);
+  }
+  .hud-tile-down {
+    border-color: var(--down);
+    box-shadow: var(--glow-down);
+  }
+  .hud-tile-accent {
+    border-color: var(--accent);
+    box-shadow: var(--glow-accent);
+  }
+
+  .glow-up {
+    text-shadow: var(--glow-up);
+  }
+  .glow-down {
+    text-shadow: var(--glow-down);
+  }
+  .glow-accent {
+    text-shadow: var(--glow-accent);
   }
 
   .btn {

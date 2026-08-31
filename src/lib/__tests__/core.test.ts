@@ -165,12 +165,13 @@ test('a filled quantity is rounded down to a real lot size, never up', () => {
 // ── Config ──────────────────────────────────────────────────────────────────
 
 test('config is clamped on write', () => {
-  const c = sanitize({ closeAtSecond: 1000, stakeUsd: -10, unlikeliness: 2, leverage: 999 });
+  const c = sanitize({ closeAtSecond: 1000, stakeUsd: -10, unlikeliness: 2, leverage: 999, maxSlippageUsd: -5 });
   assert.ok(c.closeAtSecond <= CYCLE_SEC - ENTRY_MARGIN_SEC);
   assert.ok(c.stakeUsd >= 1);
   assert.ok(c.unlikeliness <= 0.4);
   assert.equal(c.leverage, MAX_LEVERAGE);
   assert.equal(sanitize({ leverage: 0 }).leverage, 1, 'never below 1x — that would be de-leveraging, a different feature');
+  assert.ok(c.maxSlippageUsd >= 1);
   assert.equal(sanitize({ autoTrade: 'yes' }).autoTrade, DEFAULT_CONFIG.autoTrade);
 });
 

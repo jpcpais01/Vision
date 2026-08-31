@@ -84,6 +84,10 @@ export interface Config {
    *  constraint (no liquidation), so a higher multiplier only ever scales P&L,
    *  in both directions, never gets a position force-closed early. */
   leverage: number;
+  /** Reject a new entry if the fill price moves against the trade by more than
+   *  this many dollars while filling — the same protection a real limit-priced
+   *  market order gets. Never blocks a close, only ever a fresh entry. */
+  maxSlippageUsd: number;
 }
 
 export interface Stats {

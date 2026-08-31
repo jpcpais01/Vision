@@ -6,7 +6,7 @@ import type { Health } from '@/components/EngineProvider';
 import { CYCLE_SEC, ENTRY_MARGIN_SEC, MAX_LEVERAGE } from '@/lib/config';
 import { cx } from '@/lib/format';
 
-/** Five things. If a knob has no clear reason to be turned, it is not here. */
+/** Six things. If a knob has no clear reason to be turned, it is not here. */
 export function Settings({
   strategyName,
   config,
@@ -119,6 +119,17 @@ export function Settings({
             step={1}
             suffix="x"
             onChange={(v) => onChange({ leverage: v })}
+          />
+
+          <Slider
+            label="Max slippage"
+            hint="Reject a new entry if the price moves against it by more than this while the fill is landing — the same protection a real limit-priced order gets. Never blocks closing a position, only opening one."
+            value={config.maxSlippageUsd}
+            min={1}
+            max={500}
+            step={1}
+            prefix="$"
+            onChange={(v) => onChange({ maxSlippageUsd: v })}
           />
 
           <div className="border-t border-[var(--line)] pt-4">

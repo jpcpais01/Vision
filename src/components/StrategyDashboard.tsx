@@ -7,17 +7,24 @@ import { CYCLE_SEC, HISTORY_SEC, PATHS } from '@/lib/config';
 import { strategyDef } from '@/lib/strategies';
 import { CycleChart } from '@/components/Charts';
 import { Settings } from '@/components/Settings';
-import { clock, cx, pct, signed, time, usd } from '@/lib/format';
+import { HistoryPanel } from '@/components/HistoryPanel';
+import { clock, cx, pct, signed, usd } from '@/lib/format';
 import type { Busy } from '@/lib/engine';
 import type { Position, StrategyId } from '@/lib/types';
 
+/**
+ * The chart is the whole point of the screen — everything else is either a
+ * thin strip above/below it or a HUD overlay drawn on top, game-style. No
+ * section here scrolls the page; the two panels that need room (Settings,
+ * History) are modals instead.
+ */
 export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
   const s = useBot(strategyId);
   const v = useEngineContext();
   const def = strategyDef(strategyId);
   const config = s.config;
   const [showSettings, setShowSettings] = useState(false);
-  const [showLog, setShowLog] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
 
   // Tick twice a second so the countdown and elapsed-time reads stay honest
   // between engine updates.
@@ -32,64 +39,34 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
   const signalNow = s.tailProb !== null && s.tailProb < config.unlikeliness;
 
   return (
-    <>
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-base font-semibold">{def.name}</h1>
-          <p className="text-xs text-[var(--muted)]">{def.blurb}</p>
+    <div className="flex h-full min-h-0 flex-col gap-2">
+      {/* ── Top strip ───────────────────────────────────────── */}
+      <div className="flex shrink-0 items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h1 className="truncate text-[13px] font-bold uppercase tracking-wide">{def.name}</h1>
+          <p className="truncate text-[11px] text-[var(--muted)]">{def.tagline}</p>
         </div>
-        <button className="btn shrink-0" onClick={() => setShowSettings(true)}>
-          Settings
-        </button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button className="btn" onClick={() => setShowHistory(true)}>
+            History
+          </button>
+          <button className="btn" onClick={() => setShowSettings(true)}>
+            Settings
+          </button>
+        </div>
       </div>
 
       {v.error ? <Banner tone="down">Can’t reach the server: {v.error}</Banner> : null}
       {s.feedError ? <Banner tone="warn">Price feed: {s.feedError}</Banner> : null}
       {config.killSwitch ? <Banner tone="down">Stopped. Nothing will trade until you reset.</Banner> : null}
 
-      {/* ── The cycle ───────────────────────────────────────── */}
-      <section className="card p-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="label">Bitcoin</div>
-            <div className="mt-0.5 flex items-baseline gap-3">
-              <span className="num text-[34px] font-semibold leading-none">{s.price ? usd(s.price) : '—'}</span>
-              {distance !== null ? (
-                <span
-                  className={cx('num text-base font-semibold', distance >= 0 ? 'text-[var(--up)]' : 'text-[var(--down)]')}
-                >
-                  {distance >= 0 ? '+' : '−'}${Math.abs(distance).toFixed(2)}
-                </span>
-              ) : null}
-            </div>
-            {s.cycleStartPrice !== null ? (
-              <div className="num mt-1 text-xs text-[var(--muted)]">from {usd(s.cycleStartPrice)} this cycle</div>
-            ) : null}
-            {s.price ? (
-              <div className="num mt-1 text-xs text-[var(--muted)]">
-                Binance, updated {Math.max(0, Math.round((Date.now() - s.priceAt) / 1000))}s ago
-              </div>
-            ) : null}
-          </div>
-
-          <div className="text-right">
-            <div className="label">Next cycle in</div>
-            <div className="num mt-0.5 text-[34px] font-semibold leading-none">{clock(secondsToRoll)}</div>
-            <div className="mt-1 text-xs text-[var(--muted)]">{phaseLabel(s)}</div>
-          </div>
-        </div>
-
-        {secondsToRoll !== null ? (
-          <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-[var(--line)]">
-            <div
-              className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-500"
-              style={{ width: `${Math.min(100, Math.max(0, ((CYCLE_SEC - secondsToRoll) / CYCLE_SEC) * 100))}%` }}
-            />
-          </div>
-        ) : null}
-
+      {/* ── The chart — the star, full bleed, its own always-dark screen ── */}
+      <div
+        className="relative min-h-0 flex-1 overflow-hidden rounded-2xl"
+        style={{ background: '#05070a', color: '#9fb0c9' }}
+      >
         {s.running ? (
-          <div className="mt-5">
+          <>
             <CycleChart
               ticks={s.ticks}
               cycleStart={s.cycleStart}
@@ -98,155 +75,58 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
               closeAtSecond={config.closeAtSecond}
               position={s.position}
             />
-          </div>
+
+            {/* HUD overlays — game-style corner readouts on the screen itself */}
+            <div className="pointer-events-none absolute left-3 top-2.5">
+              <div className="text-[9px] font-semibold uppercase tracking-wider text-[#7c8aa0]">Bitcoin</div>
+              <div className="num text-base font-bold text-[#eaf1fb] sm:text-lg">{s.price ? usd(s.price) : '—'}</div>
+              {distance !== null ? (
+                <div className={cx('num text-[11px] font-semibold', distance >= 0 ? 'text-[#35e08a]' : 'text-[#ff5d7a]')}>
+                  {distance >= 0 ? '+' : '−'}${Math.abs(distance).toFixed(2)}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="pointer-events-none absolute right-3 top-2.5 text-right">
+              <div className="text-[9px] font-semibold uppercase tracking-wider text-[#7c8aa0]">Next cycle</div>
+              <div className="num text-xl font-bold text-[#eaf1fb] sm:text-2xl">{clock(secondsToRoll)}</div>
+              <div className="text-[10px] text-[#7c8aa0]">{phaseLabel(s)}</div>
+            </div>
+
+            <div className="pointer-events-none absolute bottom-2.5 left-3">
+              <div className="text-[9px] font-semibold uppercase tracking-wider text-[#7c8aa0]">Probability</div>
+              <div className={cx('num text-lg font-bold', signalNow ? 'text-[#ff5d7a]' : 'text-[#eaf1fb]')}>
+                {s.tailProb !== null ? pct(s.tailProb, 1) : '—'}
+              </div>
+              <div className="text-[10px] text-[#7c8aa0]">
+                {s.busy
+                  ? s.busy === 'opening'
+                    ? 'opening…'
+                    : 'closing…'
+                  : signalNow
+                    ? 'signal!'
+                    : (s.skipReason ?? 'watching')}
+              </div>
+            </div>
+
+            {s.position ? <PositionHud position={s.position} price={s.price} busy={s.busy} /> : null}
+          </>
         ) : (
-          <p className="mt-4 border-t border-[var(--line)] pt-4 text-sm leading-relaxed text-[var(--muted)]">
-            Press <strong className="text-[var(--text)]">Start</strong> and every {CYCLE_SEC} seconds it takes the
-            live Binance price as a fresh reference, simulates random paths forward from it using the realised
-            volatility of the last {HISTORY_SEC} one-second prices, and watches whether the actual price strays
-            further than the simulation thinks is likely. {def.blurb}
-          </p>
+          <StartPrompt strategyBlurb={def.blurb} />
         )}
-      </section>
+      </div>
 
-      {/* ── The open position — the single most important thing on screen while it's on ── */}
-      {s.position ? <PositionCard position={s.position} price={s.price} busy={s.busy} /> : null}
-
-      {/* ── The read ────────────────────────────────────────── */}
-      {s.running ? (
-        <section className="card p-5">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="label">Live read</span>
-            <span className="num text-sm text-[var(--muted)]">
-              {s.volPct ? `${s.volPct.toFixed(0)}% volatility — realised, last ${HISTORY_SEC}s` : ''}
-            </span>
-          </div>
-
-          <div className="mt-3 rounded-lg border border-[var(--line)] p-3">
-            <div className="label">Current probability</div>
-            <div className={cx('num mt-1 text-2xl font-bold', signalNow ? 'text-[var(--down)]' : 'text-[var(--text)]')}>
-              {s.tailProb !== null ? pct(s.tailProb, 1) : '—'}
-            </div>
-            <div className="mt-0.5 text-xs text-[var(--muted)]">
-              triggers a trade below {pct(config.unlikeliness, 0)}
-            </div>
-          </div>
-
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-            {s.busy ? (
-              <Chip tone="muted">{s.busy === 'opening' ? 'Opening…' : 'Closing…'}</Chip>
-            ) : s.position ? (
-              <Chip tone="up">In position — {s.position.direction}</Chip>
-            ) : signalNow ? (
-              <Chip tone="up">
-                Signal found — {s.price !== null && s.cycleStartPrice !== null && s.price > s.cycleStartPrice ? 'selling (SHORT)' : 'buying (LONG)'}
-              </Chip>
-            ) : (
-              <Chip tone="muted">{s.skipReason ?? 'Watching'}</Chip>
-            )}
-          </div>
-        </section>
-      ) : null}
-
-      {/* ── Today ───────────────────────────────────────────── */}
-      <section className="card grid grid-cols-2 gap-4 p-5 sm:grid-cols-4">
-        <Figure
+      {/* ── Stat strip ──────────────────────────────────────── */}
+      <div className="grid shrink-0 grid-cols-4 gap-1.5">
+        <HudStat
           label="Today"
           value={signed(s.stats.today)}
           tone={s.stats.today > 0 ? 'up' : s.stats.today < 0 ? 'down' : 'muted'}
-          strong
         />
-        <Figure label="All time" value={signed(s.stats.pnl)} hint={`${s.stats.positions} positions`} />
-        <Figure
-          label="Win rate"
-          value={s.stats.wins + s.stats.losses > 0 ? pct(s.stats.winRate) : '—'}
-          hint={`${s.stats.wins}W ${s.stats.losses}L`}
-        />
-        <Figure label="Cycles" value={String(s.stats.cycles)} hint={`${CYCLE_SEC}s each`} />
-      </section>
-
-      {/* ── History ─────────────────────────────────────────── */}
-      {s.positions.length > 0 ? (
-        <section className="card overflow-hidden">
-          <div className="border-b border-[var(--line)] px-5 py-3">
-            <span className="label">Recent positions</span>
-          </div>
-          <div className="max-h-[300px] overflow-y-auto">
-            {[...s.positions].reverse().slice(0, 40).map((p) => (
-              <div
-                key={p.id}
-                className="flex items-center gap-3 border-b border-[var(--line)] px-5 py-2.5 text-sm last:border-0"
-                title={
-                  p.closePrice !== null ? `${usd(p.openPrice)} → ${usd(p.closePrice)}` : `opened at ${usd(p.openPrice)}`
-                }
-              >
-                <span className="num w-16 shrink-0 text-xs text-[var(--muted)]">{time(p.openedAt)}</span>
-                <span
-                  className={cx(
-                    'w-14 shrink-0 text-xs font-semibold',
-                    p.direction === 'LONG' ? 'text-[var(--up)]' : 'text-[var(--down)]'
-                  )}
-                >
-                  {p.direction}
-                  {p.leverage > 1 ? ` ${p.leverage}x` : ''}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-xs text-[var(--muted)]">
-                  triggered at {pct(p.triggerProb, 1)}
-                  {p.status === 'OPEN' ? ' · still open' : ''}
-                </span>
-                <span
-                  className={cx(
-                    'num shrink-0 text-sm font-semibold',
-                    p.pnl == null ? 'text-[var(--muted)]' : p.pnl >= 0 ? 'text-[var(--up)]' : 'text-[var(--down)]'
-                  )}
-                >
-                  {p.pnl == null ? '—' : signed(p.pnl)}
-                </span>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {/* ── Log ─────────────────────────────────────────────── */}
-      <section className="card overflow-hidden">
-        <button
-          className="flex w-full items-center justify-between px-5 py-3 text-left"
-          onClick={() => setShowLog((x) => !x)}
-        >
-          <span className="label">Activity</span>
-          <span className="text-xs text-[var(--muted)]">{showLog ? 'hide' : 'show'}</span>
-        </button>
-        {showLog ? (
-          <div className="max-h-[260px] overflow-y-auto border-t border-[var(--line)] px-5 py-3">
-            {s.logs.length === 0 ? (
-              <p className="text-xs text-[var(--muted)]">Nothing yet.</p>
-            ) : (
-              [...s.logs].reverse().map((l) => (
-                <div key={l.id} className="flex gap-3 py-0.5 text-xs">
-                  <span className="num shrink-0 text-[var(--muted)]">{time(l.t)}</span>
-                  <span
-                    className={cx(
-                      l.level === 'error' && 'text-[var(--down)]',
-                      l.level === 'warn' && 'text-[var(--warn)]',
-                      l.level === 'trade' && 'text-[var(--accent)]',
-                      l.level === 'info' && 'text-[var(--muted)]'
-                    )}
-                  >
-                    {l.message}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        ) : null}
-      </section>
-
-      <p className="px-1 text-center text-xs leading-relaxed text-[var(--muted)]">
-        Every {CYCLE_SEC} seconds, a fresh driftless Monte Carlo simulates {PATHS.toLocaleString()} paths from the
-        live Binance price, shared by every bot. {def.blurb} Paper trading only, fills walked against Binance's
-        real order book. Not financial advice.
-      </p>
+        <HudStat label="All time" value={signed(s.stats.pnl)} hint={`${s.stats.positions}`} />
+        <HudStat label="Win rate" value={s.stats.wins + s.stats.losses > 0 ? pct(s.stats.winRate) : '—'} />
+        <HudStat label="Cycles" value={String(s.stats.cycles)} />
+      </div>
 
       {showSettings ? (
         <Settings
@@ -258,12 +138,16 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
           onClose={() => setShowSettings(false)}
         />
       ) : null}
-    </>
+
+      {showHistory ? (
+        <HistoryPanel positions={s.positions} logs={s.logs} onClose={() => setShowHistory(false)} />
+      ) : null}
+    </div>
   );
 }
 
-/** The single most important thing on screen while a position is open: live profit or loss, large. */
-function PositionCard({ position, price, busy }: { position: Position; price: number | null; busy: Busy }) {
+/** The single most important readout while a position is open: live profit or loss, glowing, on the screen itself. */
+function PositionHud({ position, price, busy }: { position: Position; price: number | null; busy: Busy }) {
   const unrealized =
     price !== null
       ? position.direction === 'LONG'
@@ -272,48 +156,44 @@ function PositionCard({ position, price, busy }: { position: Position; price: nu
       : null;
   const openSeconds = Math.max(0, Math.round((Date.now() - position.openedAt) / 1000));
   const winning = unrealized !== null && unrealized >= 0;
-  const tone = unrealized === null ? 'text-[var(--muted)]' : winning ? 'text-[var(--up)]' : 'text-[var(--down)]';
+  const tone = unrealized === null ? '#9fb0c9' : winning ? '#35e08a' : '#ff5d7a';
 
   return (
-    <section
-      className={cx(
-        'card border-2 p-5',
-        unrealized === null ? 'border-[var(--line)]' : winning ? 'border-[var(--up)]' : 'border-[var(--down)]'
-      )}
+    <div
+      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded-xl border-2 px-4 py-2.5 text-right backdrop-blur-sm"
+      style={{
+        borderColor: tone,
+        background: 'rgba(5, 7, 10, 0.55)',
+        boxShadow: `0 0 20px ${tone}66`,
+      }}
     >
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="label">Open position</div>
-          <div className="mt-0.5 flex items-baseline gap-2">
-            <span
-              className={cx('num text-xl font-bold', position.direction === 'LONG' ? 'text-[var(--up)]' : 'text-[var(--down)]')}
-            >
-              {position.direction}
-            </span>
-            {position.leverage > 1 ? (
-              <span className="rounded-md bg-[var(--accent-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--accent)]">
-                {position.leverage}x
-              </span>
-            ) : null}
-          </div>
-          <div className="num mt-1 text-xs text-[var(--muted)]">
-            {position.qty.toFixed(5)} BTC at {usd(position.openPrice)}
-          </div>
-        </div>
-        <div className="text-right">
-          <div className="label">Profit / loss</div>
-          <div className={cx('num mt-0.5 text-[42px] font-bold leading-none', tone)}>
-            {unrealized !== null ? signed(unrealized) : '—'}
-          </div>
-        </div>
+      <div className="flex items-center justify-end gap-1.5">
+        <span className="text-[9px] font-semibold uppercase tracking-wider text-[#7c8aa0]">
+          {position.direction}
+          {position.leverage > 1 ? ` ${position.leverage}x` : ''}
+        </span>
       </div>
-      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--line)] pt-3 text-xs text-[var(--muted)]">
-        <span>open {clock(openSeconds)}</span>
-        <span>·</span>
-        <span>triggered at {pct(position.triggerProb, 1)}</span>
-        {busy === 'closing' ? <Chip tone="muted">Closing…</Chip> : null}
+      <div className="num text-[32px] font-bold leading-none sm:text-[40px]" style={{ color: tone }}>
+        {unrealized !== null ? signed(unrealized) : '—'}
       </div>
-    </section>
+      <div className="mt-1 text-[10px] text-[#7c8aa0]">
+        open {clock(openSeconds)}
+        {busy === 'closing' ? ' · closing…' : ''}
+      </div>
+    </div>
+  );
+}
+
+function StartPrompt({ strategyBlurb }: { strategyBlurb: string }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
+      <div className="text-2xl font-bold uppercase tracking-widest text-[#eaf1fb]">Press start</div>
+      <p className="max-w-sm text-xs leading-relaxed text-[#7c8aa0]">
+        Every {CYCLE_SEC}s it takes the live Binance price as a fresh reference, simulates {PATHS.toLocaleString()}{' '}
+        random paths using the realised volatility of the last {HISTORY_SEC}s, and watches whether the price strays
+        further than the simulation thinks is likely. {strategyBlurb}
+      </p>
+    </div>
   );
 }
 
@@ -326,48 +206,38 @@ function phaseLabel(s: ReturnType<typeof useBot>): string {
   return 'watching';
 }
 
-function Figure({
+function HudStat({
   label,
   value,
   hint,
   tone,
-  strong,
 }: {
   label: string;
   value: string;
   hint?: string;
   tone?: 'up' | 'down' | 'muted';
-  strong?: boolean;
 }) {
   return (
-    <div className="min-w-0">
-      <div className="label">{label}</div>
+    <div
+      className={cx(
+        'hud-tile',
+        tone === 'up' && 'hud-tile-up',
+        tone === 'down' && 'hud-tile-down'
+      )}
+    >
+      <div className="label truncate">{label}</div>
       <div
         className={cx(
-          'num mt-0.5 font-semibold leading-tight',
-          strong ? 'text-[26px]' : 'text-[22px]',
+          'num truncate text-base font-bold sm:text-lg',
           tone === 'up' && 'text-[var(--up)]',
           tone === 'down' && 'text-[var(--down)]',
-          tone === 'muted' && 'text-[var(--muted)]'
+          !tone && 'text-[var(--text)]'
         )}
       >
         {value}
+        {hint ? <span className="ml-1 text-[10px] font-normal text-[var(--muted)]">{hint}</span> : null}
       </div>
-      {hint ? <div className="mt-0.5 truncate text-[11px] text-[var(--muted)]">{hint}</div> : null}
     </div>
-  );
-}
-
-function Chip({ children, tone }: { children: React.ReactNode; tone: 'up' | 'muted' }) {
-  return (
-    <span
-      className={cx(
-        'rounded-md px-2 py-1 text-xs font-medium',
-        tone === 'up' ? 'bg-[var(--up-bg)] text-[var(--up)]' : 'bg-[var(--chip)] text-[var(--muted)]'
-      )}
-    >
-      {children}
-    </span>
   );
 }
 
@@ -375,7 +245,7 @@ function Banner({ children, tone }: { children: React.ReactNode; tone: 'warn' | 
   return (
     <div
       className={cx(
-        'rounded-lg px-4 py-2.5 text-sm',
+        'shrink-0 rounded-lg px-3 py-1.5 text-xs',
         tone === 'down' ? 'bg-[var(--down-bg)] text-[var(--down)]' : 'bg-[var(--warn-bg)] text-[var(--warn)]'
       )}
     >

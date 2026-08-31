@@ -105,6 +105,17 @@ What's still not modelled: fees, margin as a real constraint (see
 **Leverage** below), and funding rate accrual (real, but negligible over a
 hold of at most 40 seconds).
 
+## Look and feel
+
+The whole app is one screen — no page scroll, `100dvh` top to bottom. The
+chart is the point of it: full bleed, no card border, its own always-dark
+"screen" regardless of site theme, with the probability cone glowing on top
+of it and the live price a pulsing dot. Everything else — price, countdown,
+tail probability, the open position's live P&L — is drawn as HUD overlays
+directly on that screen instead of separate stacked cards, arcade-style.
+Trade history and the activity log live behind one **History** button
+instead of taking up permanent space on the page.
+
 ## Setup
 
 ```bash
@@ -131,7 +142,7 @@ variables you want, done. No build configuration needed.
 
 ## Settings
 
-Per bot, five things, all on sliders or a toggle:
+Per bot, six things, all on sliders or a toggle:
 
 - **Trade automatically** — off means this bot watches and logs, but never buys
 - **Flag when probability drops below** — how unlikely the current move has
@@ -140,6 +151,9 @@ Per bot, five things, all on sliders or a toggle:
   into the 60-second cycle (default 50, and capped there — see below)
 - **Stake per trade** — fixed USD margin per position (default $20)
 - **Leverage** — 1x to 10x, multiplies notional exposure (default 1x — see below)
+- **Max slippage** — reject a new entry if the fill price moves against it by
+  more than this many dollars while the order is filling (default $50 — see
+  below)
 
 Entries are never allowed in the first or last 10 seconds of a cycle,
 regardless of these settings — not a setting, a fixed rule (`ENTRY_MARGIN_SEC`
@@ -155,6 +169,19 @@ liquidation, ever, at any leverage — a highly leveraged position just has
 P&L that moves proportionally faster in both directions, unconditionally.
 The leverage a position opened with is captured on the position itself, so
 changing the setting mid-session never relabels an already-open trade.
+
+**Max slippage** is the same protection a real exchange gives a
+limit-protected (marketable-limit) market order: between the tick that
+triggered the decision and the order-book fetch that fills it, the price can
+have moved on, and the fill should never be allowed to land arbitrarily far
+from the price that justified the trade. Only an *adverse* move counts
+against the limit — paying more for a long, or selling for less on a short,
+than the triggering price — a favorable move never blocks a trade, exactly
+like Binance's own Price Protect. Real venues offer this natively (Binance
+Price Protect, an IOC limit order with a price bound); it's a real,
+recognized order-protection mechanism, not something invented for this app.
+It only ever blocks a fresh entry — a scheduled close always goes through,
+same as a real position that must be exited regardless of price.
 
 **Stop all** in the header is global — every bot, immediately. Resetting one
 bot's own stop (shown once that bot is stopped) only re-arms that one.
@@ -176,8 +203,12 @@ src/app/
                           every Binance call is made directly from the browser
 src/components/
   EngineProvider.tsx     the one engine instance, created at the root layout so it survives navigation
+  AppShell.tsx            the single-viewport-height shell (no page scroll) plus the scanline overlay
   Header.tsx              the shared nav and the global Start/Stop/Stop-all
-  StrategyDashboard.tsx   one bot's page — price, chart, read, history, log, settings
+  StrategyDashboard.tsx   one bot's page — the chart and its HUD overlays, a stat strip, settings and history as modals
+  Charts.tsx              the price line against the simulated probability cone, full bleed
+  HistoryPanel.tsx        positions and the activity log, tabbed, behind one button
+  Settings.tsx            the six per-bot settings, as a modal
 ```
 
 ## Tests
@@ -195,7 +226,8 @@ collapses to zero with no data; a paper fill walks real depth on both sides
 (USD-sized to open, quantity-sized to close) and reports shortfalls
 honestly; a filled quantity is rounded down to a real lot size, never up;
 reversion and momentum take opposite sides of the same unlikely move;
-leverage clamps to [1x, 10x] on write and defaults to 1x.
+leverage clamps to [1x, 10x] on write and defaults to 1x; max slippage
+clamps to a positive dollar amount on write.
 
 ## Known limits
 

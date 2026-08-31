@@ -29,6 +29,7 @@ export const DEFAULT_CONFIG: Config = {
   unlikeliness: 0.1, // trade when the model gives the current move less than a 10% chance
   stakeUsd: 20,
   leverage: 1,
+  maxSlippageUsd: 50,
 };
 
 const BOUNDS = {
@@ -39,6 +40,7 @@ const BOUNDS = {
   unlikeliness: [0.01, 0.4],
   stakeUsd: [1, 10_000],
   leverage: [1, MAX_LEVERAGE],
+  maxSlippageUsd: [1, 1000],
 } as const;
 
 /** Clamp an untrusted patch into range. Applied on every write, server-side too. */

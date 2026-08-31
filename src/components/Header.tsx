@@ -16,6 +16,8 @@ function strategyFromPath(pathname: string): StrategyId {
 /**
  * Shared across every strategy page — Start/Stop and Stop-all act on the one
  * engine underneath all of them, not just whichever bot you're looking at.
+ * Deliberately slim: this is the one fixed-height row above a viewport that
+ * otherwise belongs entirely to the chart.
  */
 export function Header() {
   const pathname = usePathname();
@@ -24,24 +26,18 @@ export function Header() {
   const bot = useBot(strategyId);
 
   return (
-    <header className="mx-auto flex w-full max-w-[880px] flex-wrap items-center gap-3 px-4 pt-5">
-      <div className="flex items-center gap-2.5">
-        <span className="grid h-7 w-7 place-items-center rounded-lg bg-[var(--accent)] text-[13px] font-bold text-white">
-          V
-        </span>
-        <span className="text-[15px] font-semibold tracking-tight">Vision</span>
-        <span className="rounded-md bg-[var(--accent-bg)] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[var(--accent)]">
-          Paper
-        </span>
-      </div>
+    <header className="relative z-10 mx-auto flex w-full max-w-[900px] shrink-0 items-center gap-2 px-3 py-2">
+      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-[var(--accent)] text-[11px] font-bold text-[#04121a] glow-accent">
+        V
+      </span>
 
-      <nav className="flex items-center gap-1 rounded-lg bg-[var(--chip)] p-1">
+      <nav className="flex items-center gap-0.5 rounded-lg bg-[var(--chip)] p-0.5">
         {STRATEGIES.map((s) => (
           <Link
             key={s.id}
             href={`/${s.id}`}
             className={cx(
-              'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+              'rounded-md px-2 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors',
               s.id === strategyId ? 'bg-[var(--card)] text-[var(--text)] shadow-sm' : 'text-[var(--muted)]'
             )}
           >
@@ -50,17 +46,27 @@ export function Header() {
         ))}
       </nav>
 
-      <span className="flex items-center gap-1.5 text-xs text-[var(--muted)]" title="Binance's live trade stream">
+      <span
+        className="hidden items-center gap-1.5 text-[11px] text-[var(--muted)] sm:flex"
+        title="Binance's live trade stream"
+      >
         <span
           className={cx(
             'h-1.5 w-1.5 rounded-full',
-            bot.connected ? 'bg-[var(--up)]' : bot.running ? 'bg-[var(--warn)]' : 'bg-[var(--line)]'
+            bot.connected ? 'bg-[var(--up)] glow-up' : bot.running ? 'bg-[var(--warn)]' : 'bg-[var(--line)]'
           )}
         />
-        Binance {bot.connected ? 'live' : bot.running ? 'connecting' : 'offline'}
+        {bot.connected ? 'live' : bot.running ? 'connecting' : 'offline'}
       </span>
+      <span
+        className={cx(
+          'h-2 w-2 shrink-0 rounded-full sm:hidden',
+          bot.connected ? 'bg-[var(--up)]' : bot.running ? 'bg-[var(--warn)]' : 'bg-[var(--line)]'
+        )}
+        title="Binance connection"
+      />
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex items-center gap-1.5">
         {bot.running ? (
           <button className="btn" onClick={v.stop}>
             Stop
@@ -74,7 +80,7 @@ export function Header() {
           className={cx('btn', bot.config.killSwitch ? 'btn-warn' : 'btn-danger')}
           onClick={() => void (bot.config.killSwitch ? v.kill(strategyId, false) : v.killAll())}
         >
-          {bot.config.killSwitch ? 'Reset stop' : 'Stop all'}
+          {bot.config.killSwitch ? 'Reset' : 'Stop all'}
         </button>
       </div>
     </header>

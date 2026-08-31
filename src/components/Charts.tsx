@@ -5,11 +5,11 @@ import type { Direction, Tick } from '@/lib/types';
 import type { Band } from '@/lib/montecarlo';
 import { CYCLE_SEC, ENTRY_MARGIN_SEC } from '@/lib/config';
 
-/** One chart. Hand-drawn SVG — no library, nothing to load. */
+/** One chart. Hand-drawn SVG — no library, nothing to load. The whole point of the screen. */
 
-const UP = '#12805B';
-const DOWN = '#C0453F';
-const BAND = '#2F6FE4';
+const UP = '#35e08a';
+const DOWN = '#ff5d7a';
+const BAND = '#4fd6ff';
 
 interface PositionMark {
   direction: Direction;
@@ -19,7 +19,7 @@ interface PositionMark {
   closePrice: number | null;
 }
 
-/** The live price against the simulated [threshold, 1-threshold] band for this cycle. */
+/** The live price against the simulated probability cone for this cycle — full bleed, no chrome. */
 export function CycleChart({
   ticks,
   cycleStart,
@@ -35,14 +35,18 @@ export function CycleChart({
   closeAtSecond: number;
   position: PositionMark | null;
 }) {
-  const W = 800;
-  const H = 340;
-  const pad = { t: 12, r: 8, b: 10, l: 8 };
+  // preserveAspectRatio="none" below stretches this to fill whatever box the
+  // flex layout actually gives it — kept wide here so that stretch is a
+  // minor correction, not a real distortion, whatever the real box turns
+  // out to be.
+  const W = 1000;
+  const H = 420;
+  const pad = { t: 18, r: 10, b: 14, l: 10 };
 
   const pts = useMemo(() => (cycleStart != null ? ticks.filter((k) => k.t >= cycleStart) : []), [ticks, cycleStart]);
 
   if (!band || cycleStart === null || cycleStartPrice === null || pts.length < 2) {
-    return <Placeholder height={H}>Fills in once a cycle starts</Placeholder>;
+    return <Placeholder>Fills in once a cycle starts</Placeholder>;
   }
 
   const lo = Math.min(cycleStartPrice, ...band.map((b) => b.lo), ...pts.map((p) => p.p));
@@ -54,32 +58,68 @@ export function CycleChart({
   const xSec = (s: number) => pad.l + (s / CYCLE_SEC) * (W - pad.l - pad.r);
 
   const bandTop = band.map((b, i) => `${i ? 'L' : 'M'} ${xSec(b.sec).toFixed(1)} ${y(b.hi).toFixed(1)}`).join(' ');
-  const bandBottom = [...band].reverse().map((b) => `L ${xSec(b.sec).toFixed(1)} ${y(b.lo).toFixed(1)}`).join(' ');
-  const bandPath = `${bandTop} ${bandBottom} Z`;
+  const bandBottomPts = [...band].reverse();
+  const bandBottom = bandBottomPts.map((b) => `L ${xSec(b.sec).toFixed(1)} ${y(b.lo).toFixed(1)}`).join(' ');
+  const bandFillPath = `${bandTop} ${bandBottom} Z`;
+  const bandHiPath = band.map((b, i) => `${i ? 'L' : 'M'} ${xSec(b.sec).toFixed(1)} ${y(b.hi).toFixed(1)}`).join(' ');
+  const bandLoPath = band.map((b, i) => `${i ? 'L' : 'M'} ${xSec(b.sec).toFixed(1)} ${y(b.lo).toFixed(1)}`).join(' ');
 
   const line = pts.map((p, i) => `${i ? 'L' : 'M'} ${x(p.t).toFixed(1)} ${y(p.p).toFixed(1)}`).join(' ');
   const last = pts[pts.length - 1];
   const above = last.p > cycleStartPrice;
+  const tone = above ? UP : DOWN;
   const entryX = xSec(ENTRY_MARGIN_SEC);
   const closeX = xSec(closeAtSecond);
 
   return (
     <svg
       viewBox={`0 0 ${W} ${H}`}
-      className="w-full"
-      style={{ height: H }}
+      preserveAspectRatio="none"
+      className="h-full w-full"
       role="img"
-      aria-label="Live price against the simulated probability band for this cycle."
+      aria-label="Live price against the simulated probability cone for this cycle."
     >
-      <path d={bandPath} fill={BAND} opacity="0.1" />
+      <defs>
+        <linearGradient id="cone" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={BAND} stopOpacity="0.32" />
+          <stop offset="45%" stopColor={BAND} stopOpacity="0.05" />
+          <stop offset="55%" stopColor={BAND} stopOpacity="0.05" />
+          <stop offset="100%" stopColor={BAND} stopOpacity="0.32" />
+        </linearGradient>
+        <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+          <feGaussianBlur stdDeviation="6" result="blur" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+      </defs>
+
+      {/* faint terminal-style horizontal grid */}
+      {[0.2, 0.4, 0.6, 0.8].map((f) => (
+        <line
+          key={f}
+          x1={pad.l}
+          x2={W - pad.r}
+          y1={pad.t + f * (H - pad.t - pad.b)}
+          y2={pad.t + f * (H - pad.t - pad.b)}
+          stroke="currentColor"
+          strokeOpacity="0.05"
+        />
+      ))}
+
+      <path d={bandFillPath} fill="url(#cone)" />
+      <path d={bandHiPath} fill="none" stroke={BAND} strokeOpacity="0.55" strokeWidth="1.5" filter="url(#glow)" />
+      <path d={bandLoPath} fill="none" stroke={BAND} strokeOpacity="0.55" strokeWidth="1.5" filter="url(#glow)" />
+
       <line
         x1={pad.l}
         x2={W - pad.r}
         y1={y(cycleStartPrice)}
         y2={y(cycleStartPrice)}
         stroke="currentColor"
-        strokeOpacity="0.35"
-        strokeDasharray="5 4"
+        strokeOpacity="0.3"
+        strokeDasharray="6 5"
       />
       <line
         x1={entryX}
@@ -87,8 +127,8 @@ export function CycleChart({
         y1={pad.t}
         y2={H - pad.b}
         stroke="currentColor"
-        strokeOpacity="0.22"
-        strokeDasharray="3 3"
+        strokeOpacity="0.18"
+        strokeDasharray="3 4"
       />
       <line
         x1={closeX}
@@ -96,34 +136,37 @@ export function CycleChart({
         y1={pad.t}
         y2={H - pad.b}
         stroke="currentColor"
-        strokeOpacity="0.22"
-        strokeDasharray="3 3"
+        strokeOpacity="0.18"
+        strokeDasharray="3 4"
       />
-      <path d={line} fill="none" stroke={above ? UP : DOWN} strokeWidth="2.5" strokeLinejoin="round" />
-      <circle cx={x(last.t)} cy={y(last.p)} r="4.5" fill={above ? UP : DOWN} />
+
+      <path d={line} fill="none" stroke={tone} strokeWidth="4" strokeLinejoin="round" strokeLinecap="round" filter="url(#glow)" />
+
       {position ? (
         <>
           <circle
             cx={x(position.openedAt)}
             cy={y(position.openPrice)}
-            r="4.5"
+            r="9"
             fill="none"
             stroke="currentColor"
-            strokeWidth="1.75"
+            strokeWidth="2.5"
           />
           {position.closedAt !== null && position.closePrice !== null ? (
-            <circle cx={x(position.closedAt)} cy={y(position.closePrice)} r="4" fill="currentColor" />
+            <circle cx={x(position.closedAt)} cy={y(position.closePrice)} r="7" fill="currentColor" />
           ) : null}
         </>
       ) : null}
+
+      {/* the live marker — a soft pulsing halo behind a solid dot */}
+      <circle cx={x(last.t)} cy={y(last.p)} r="20" fill={tone} opacity="0.25" className="animate-pulse" />
+      <circle cx={x(last.t)} cy={y(last.p)} r="8" fill={tone} filter="url(#glow)" />
     </svg>
   );
 }
 
-function Placeholder({ children, height }: { children: React.ReactNode; height: number }) {
+function Placeholder({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-center text-xs text-[var(--muted)]" style={{ height }}>
-      {children}
-    </div>
+    <div className="flex h-full w-full items-center justify-center text-xs text-[var(--muted)]">{children}</div>
   );
 }

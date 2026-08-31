@@ -444,10 +444,15 @@ export class Engine {
     }
     bot.skipReason = null;
     const direction = directionFor(strategyId, this.price > this.cycleStartPrice);
-    void this.openPosition(strategyId, direction, this.tailProb);
+    void this.openPosition(strategyId, direction, this.tailProb, this.price);
   }
 
-  private async openPosition(strategyId: StrategyId, direction: Direction, triggerProb: number): Promise<void> {
+  private async openPosition(
+    strategyId: StrategyId,
+    direction: Direction,
+    triggerProb: number,
+    intendedPrice: number
+  ): Promise<void> {
     const bot = this.bots[strategyId];
     if (bot.busy || this.cycleStart === null) return;
     bot.busy = 'opening';
@@ -461,6 +466,22 @@ export class Engine {
       const f = fillUsd(book, direction === 'LONG' ? 'BUY' : 'SELL', notionalUsd, filters?.stepSize);
       if (f.qty <= 0) {
         this.botLog(strategyId, 'warn', 'No liquidity for a simulated fill');
+        return;
+      }
+      // Slippage protection, the same way a real limit-protected market
+      // order works: only an ADVERSE move counts against the limit — paying
+      // less (or selling for more) than the price that triggered the trade
+      // is never a reason to reject it, only paying more (or selling for
+      // less) is. Between the decision and this fill actually landing, the
+      // price the trade reacted to can have moved on.
+      const adverse = direction === 'LONG' ? f.price - intendedPrice : intendedPrice - f.price;
+      if (adverse > bot.config.maxSlippageUsd) {
+        this.botLog(
+          strategyId,
+          'warn',
+          `Rejected — price moved $${adverse.toFixed(2)} against the trade while filling ` +
+            `(limit $${bot.config.maxSlippageUsd}), would have opened at $${f.price.toFixed(2)} vs $${intendedPrice.toFixed(2)}`
+        );
         return;
       }
       const position: Position = {
