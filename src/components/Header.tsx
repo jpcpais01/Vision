@@ -27,10 +27,6 @@ export function Header() {
 
   return (
     <header className="relative z-10 mx-auto flex w-full max-w-[900px] shrink-0 items-center gap-2 px-3 py-2">
-      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-[var(--accent)] text-[11px] font-bold text-[#04121a] glow-accent">
-        V
-      </span>
-
       <nav className="flex items-center gap-0.5 rounded-lg bg-[var(--chip)] p-0.5">
         {STRATEGIES.map((s) => (
           <Link
