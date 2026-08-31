@@ -321,6 +321,11 @@ export class Engine {
       const delay = tick.t - this.cycleStart;
       if (delay > 200) this.log('warn', `First in-cycle tick arrived ${delay}ms after the cycle boundary`);
     }
+
+    // React to every real tick immediately, not on the next 250ms poll — the
+    // only delay between a signal appearing and a fill starting should be
+    // fetchBook()'s own real round-trip, nothing self-imposed on top of it.
+    if (this.running) this.evaluate(tick.t);
   }
 
   /**
@@ -359,21 +364,31 @@ export class Engine {
     if (this.cycleStart === null || boundary > this.cycleStart) this.rollCycle(boundary);
     if (this.cycleStart === null) return;
 
+    // A time-based fallback for whatever a price tick alone can't cover —
+    // forcing a close at each bot's own configured second, and re-evaluating
+    // during a quiet stretch with no fresh ticks. The tick-driven path in
+    // ingestTick is what actually keeps this current the rest of the time.
+    this.evaluate(now);
+
     const elapsedSec = (now - this.cycleStart) / 1000;
-
-    if (this.cycleStartPrice !== null && this.price !== null) {
-      for (const id of STRATEGY_IDS) {
-        const bot = this.bots[id];
-        if (bot.dist) bot.tailProb = tailProbability(bot.dist, elapsedSec, this.cycleStartPrice, this.price);
-        this.considerTrade(id, elapsedSec);
-      }
-    }
-
     for (const id of STRATEGY_IDS) {
       const bot = this.bots[id];
       if (bot.position && elapsedSec >= bot.config.closeAtSecond && bot.busy !== 'closing') {
         void this.closePosition(id, 'cycle close');
       }
+    }
+  }
+
+  /** Refresh every bot's tail probability against the price right now, and
+   *  let each one act on it — called on every real tick (no polling lag) and
+   *  by step() as a time-based fallback. */
+  private evaluate(now: number): void {
+    if (this.cycleStart === null || this.cycleStartPrice === null || this.price === null) return;
+    const elapsedSec = (now - this.cycleStart) / 1000;
+    for (const id of STRATEGY_IDS) {
+      const bot = this.bots[id];
+      if (bot.dist) bot.tailProb = tailProbability(bot.dist, elapsedSec, this.cycleStartPrice, this.price);
+      this.considerTrade(id, elapsedSec);
     }
   }
 
