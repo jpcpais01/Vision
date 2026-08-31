@@ -454,7 +454,11 @@ export class Engine {
     this.emit(true);
     try {
       const [book, filters] = await Promise.all([fetchBook(), symbolFilters()]);
-      const f = fillUsd(book, direction === 'LONG' ? 'BUY' : 'SELL', bot.config.stakeUsd, filters?.stepSize);
+      // Leverage multiplies notional exposure, not the margin risked — margin
+      // itself is never modelled as a constraint (no liquidation), so this
+      // only ever scales how big a move in either direction is worth.
+      const notionalUsd = bot.config.stakeUsd * bot.config.leverage;
+      const f = fillUsd(book, direction === 'LONG' ? 'BUY' : 'SELL', notionalUsd, filters?.stepSize);
       if (f.qty <= 0) {
         this.botLog(strategyId, 'warn', 'No liquidity for a simulated fill');
         return;
@@ -467,6 +471,7 @@ export class Engine {
         qty: f.qty,
         openedAt: Date.now(),
         openPrice: f.price,
+        leverage: bot.config.leverage,
         triggerProb,
         closesAt: this.cycleStart + bot.config.closeAtSecond * 1000,
         status: 'OPEN',
@@ -480,7 +485,8 @@ export class Engine {
       this.botLog(
         strategyId,
         'trade',
-        `Opened ${direction} ${f.qty.toFixed(5)} BTC at $${f.price.toFixed(2)} — that move had only a ${(triggerProb * 100).toFixed(1)}% chance`
+        `Opened ${direction} ${f.qty.toFixed(5)} BTC at $${f.price.toFixed(2)}` +
+          `${bot.config.leverage > 1 ? ` (${bot.config.leverage}x)` : ''} — that move had only a ${(triggerProb * 100).toFixed(1)}% chance`
       );
     } catch (err) {
       this.botLog(strategyId, 'error', `Open failed: ${msg(err)}`);

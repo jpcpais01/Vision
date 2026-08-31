@@ -101,10 +101,9 @@ ticks into cycles against the same local clock, so timestamping against a
 different one would silently filter fresh ticks out of the current cycle
 until local time caught up to it.
 
-What's still not modelled: fees, leverage and liquidation risk (every
-position is sized as plain 1x notional exposure, not a margined bet), and
-funding rate accrual (real, but negligible over a hold of at most 40
-seconds).
+What's still not modelled: fees, margin as a real constraint (see
+**Leverage** below), and funding rate accrual (real, but negligible over a
+hold of at most 40 seconds).
 
 ## Setup
 
@@ -132,14 +131,15 @@ variables you want, done. No build configuration needed.
 
 ## Settings
 
-Per bot, four things, all on sliders or a toggle:
+Per bot, five things, all on sliders or a toggle:
 
 - **Trade automatically** — off means this bot watches and logs, but never buys
 - **Flag when probability drops below** — how unlikely the current move has
   to be, versus the simulation, before it's a signal (default 10%)
 - **Close trades at second** — force-close whatever's open this many seconds
   into the 60-second cycle (default 50, and capped there — see below)
-- **Stake per trade** — fixed USD amount per position (default $20)
+- **Stake per trade** — fixed USD margin per position (default $20)
+- **Leverage** — 1x to 10x, multiplies notional exposure (default 1x — see below)
 
 Entries are never allowed in the first or last 10 seconds of a cycle,
 regardless of these settings — not a setting, a fixed rule (`ENTRY_MARGIN_SEC`
@@ -147,6 +147,14 @@ in `src/lib/config.ts`). The first 10 seconds barely have any tape to react
 to yet; the last 10 exist so no bot is ever mid-decision right as the next
 cycle begins. **Close trades at second** can be pulled earlier than 50, but
 never later.
+
+**Stake** is margin, not exposure — a position's actual notional size is
+`stakeUsd × leverage`, which is what the fill actually walks the order book
+for. Margin is never modelled as a real constraint, though: there's no
+liquidation, ever, at any leverage — a highly leveraged position just has
+P&L that moves proportionally faster in both directions, unconditionally.
+The leverage a position opened with is captured on the position itself, so
+changing the setting mid-session never relabels an already-open trade.
 
 **Stop all** in the header is global — every bot, immediately. Resetting one
 bot's own stop (shown once that bot is stopped) only re-arms that one.
@@ -186,7 +194,8 @@ volatility recovers a known sigma from a realised one-second tape and never
 collapses to zero with no data; a paper fill walks real depth on both sides
 (USD-sized to open, quantity-sized to close) and reports shortfalls
 honestly; a filled quantity is rounded down to a real lot size, never up;
-reversion and momentum take opposite sides of the same unlikely move.
+reversion and momentum take opposite sides of the same unlikely move;
+leverage clamps to [1x, 10x] on write and defaults to 1x.
 
 ## Known limits
 
@@ -195,9 +204,9 @@ reversion and momentum take opposite sides of the same unlikely move.
 - **If Binance's stream ever drops**, a REST poll of the ticker price stands
   in until it reconnects — still genuine, just slower to update.
 - **This is paper trading only.** There is no live order path in this app.
-- **Fees, leverage, and liquidation risk aren't modelled.** Every reported
-  P&L is gross, and every position is a plain 1x notional exposure, not a
-  margined bet.
+- **Fees and liquidation risk aren't modelled.** Every reported P&L is gross,
+  and margin is never a real constraint — leverage (up to 10x) scales
+  notional exposure and P&L, but no position is ever force-closed for it.
 - **The edge may not exist, for either strategy.** They cannot both be right
   about the same move — that's the point of running them side by side. Watch
   the numbers before assuming either one.

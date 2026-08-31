@@ -188,6 +188,7 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
                   )}
                 >
                   {p.direction}
+                  {p.leverage > 1 ? ` ${p.leverage}x` : ''}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-xs text-[var(--muted)]">
                   triggered at {pct(p.triggerProb, 1)}
@@ -283,13 +284,17 @@ function PositionCard({ position, price, busy }: { position: Position; price: nu
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="label">Open position</div>
-          <div
-            className={cx(
-              'num mt-0.5 text-xl font-bold',
-              position.direction === 'LONG' ? 'text-[var(--up)]' : 'text-[var(--down)]'
-            )}
-          >
-            {position.direction}
+          <div className="mt-0.5 flex items-baseline gap-2">
+            <span
+              className={cx('num text-xl font-bold', position.direction === 'LONG' ? 'text-[var(--up)]' : 'text-[var(--down)]')}
+            >
+              {position.direction}
+            </span>
+            {position.leverage > 1 ? (
+              <span className="rounded-md bg-[var(--accent-bg)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--accent)]">
+                {position.leverage}x
+              </span>
+            ) : null}
           </div>
           <div className="num mt-1 text-xs text-[var(--muted)]">
             {position.qty.toFixed(5)} BTC at {usd(position.openPrice)}

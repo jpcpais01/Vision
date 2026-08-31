@@ -35,6 +35,10 @@ export interface Position {
   qty: number; // BTC
   openedAt: number;
   openPrice: number;
+  /** Notional exposure is stakeUsd * leverage — captured at entry, so a later
+   *  change to the bot's own leverage setting can't retroactively relabel an
+   *  already-open position. */
+  leverage: number;
   /** The tail probability that triggered this entry. */
   triggerProb: number;
   /** When this cycle forces the position closed, regardless of price. */
@@ -74,8 +78,12 @@ export interface Config {
   closeAtSecond: number;
   /** Flag a trade when the live price's tail probability drops below this. */
   unlikeliness: number;
-  /** Fixed USD per position. */
+  /** Fixed USD margin per position — the notional exposure is this times leverage. */
   stakeUsd: number;
+  /** Multiplies the position's notional exposure. Margin is never modelled as a
+   *  constraint (no liquidation), so a higher multiplier only ever scales P&L,
+   *  in both directions, never gets a position force-closed early. */
+  leverage: number;
 }
 
 export interface Stats {

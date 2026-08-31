@@ -3,10 +3,10 @@
 import { useEffect } from 'react';
 import type { Config } from '@/lib/types';
 import type { Health } from '@/components/EngineProvider';
-import { CYCLE_SEC, ENTRY_MARGIN_SEC } from '@/lib/config';
+import { CYCLE_SEC, ENTRY_MARGIN_SEC, MAX_LEVERAGE } from '@/lib/config';
 import { cx } from '@/lib/format';
 
-/** Four things. If a knob has no clear reason to be turned, it is not here. */
+/** Five things. If a knob has no clear reason to be turned, it is not here. */
 export function Settings({
   strategyName,
   config,
@@ -101,13 +101,24 @@ export function Settings({
 
           <Slider
             label="Stake per trade"
-            hint="Fixed USD amount risked on each position."
+            hint="Fixed USD margin per position — the actual exposure is this times leverage."
             value={config.stakeUsd}
             min={1}
             max={500}
             step={1}
             prefix="$"
             onChange={(v) => onChange({ stakeUsd: v })}
+          />
+
+          <Slider
+            label="Leverage"
+            hint="Multiplies position size, so P&L moves proportionally faster in both directions. Margin itself is never modelled as a limit — no liquidation, ever."
+            value={config.leverage}
+            min={1}
+            max={MAX_LEVERAGE}
+            step={1}
+            suffix="x"
+            onChange={(v) => onChange({ leverage: v })}
           />
 
           <div className="border-t border-[var(--line)] pt-4">

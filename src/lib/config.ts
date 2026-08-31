@@ -20,12 +20,15 @@ export const SYMBOL = 'BTCUSDT';
 export const FUTURES_WS = 'wss://fstream.binance.com';
 export const FUTURES_REST = 'https://fapi.binance.com';
 
+export const MAX_LEVERAGE = 10;
+
 export const DEFAULT_CONFIG: Config = {
   autoTrade: false,
   killSwitch: false,
   closeAtSecond: CYCLE_SEC - ENTRY_MARGIN_SEC,
   unlikeliness: 0.1, // trade when the model gives the current move less than a 10% chance
   stakeUsd: 20,
+  leverage: 1,
 };
 
 const BOUNDS = {
@@ -35,6 +38,7 @@ const BOUNDS = {
   closeAtSecond: [ENTRY_MARGIN_SEC + 1, CYCLE_SEC - ENTRY_MARGIN_SEC],
   unlikeliness: [0.01, 0.4],
   stakeUsd: [1, 10_000],
+  leverage: [1, MAX_LEVERAGE],
 } as const;
 
 /** Clamp an untrusted patch into range. Applied on every write, server-side too. */
