@@ -1,5 +1,5 @@
 import 'server-only';
-import type { Config, Trade, WindowRecord } from './types';
+import type { Config, CycleRecord, Position } from './types';
 import { DEFAULT_CONFIG } from './config';
 import { env } from './env';
 
@@ -12,10 +12,10 @@ import { env } from './env';
  * implementations: process memory (zero config) and Upstash Redis over REST
  * (durable, works from any runtime, no TCP connection to pool).
  *
- * The client is the source of truth for *live* state — it holds the tick feed
- * and drives the cycle — and posts completed records here. That split keeps the
- * hot loop off the serverless billing meter while still giving a durable audit
- * trail of every decision.
+ * The client is the source of truth for *live* state — it holds the tick
+ * feed and drives the cycle — and posts completed records here. That split
+ * keeps the hot loop off the serverless billing meter while still giving a
+ * durable audit trail of every decision.
  */
 
 const MAX_ROWS = 1000;
@@ -28,18 +28,18 @@ export interface Store {
   setConfig(config: Config): Promise<void>;
   getKillSwitch(): Promise<boolean>;
   setKillSwitch(on: boolean): Promise<void>;
-  listTrades(): Promise<Trade[]>;
-  upsertTrade(trade: Trade): Promise<void>;
-  listWindows(): Promise<WindowRecord[]>;
-  upsertWindow(w: WindowRecord): Promise<void>;
+  listPositions(): Promise<Position[]>;
+  upsertPosition(p: Position): Promise<void>;
+  listCycles(): Promise<CycleRecord[]>;
+  upsertCycle(c: CycleRecord): Promise<void>;
   reset(): Promise<void>;
 }
 
 const KEYS = {
   config: 'vision:config',
   kill: 'vision:killswitch',
-  trades: 'vision:trades',
-  windows: 'vision:windows',
+  positions: 'vision:positions',
+  cycles: 'vision:cycles',
 };
 
 // ── Memory implementation ───────────────────────────────────────────────────
@@ -47,8 +47,8 @@ const KEYS = {
 interface MemoryState {
   config: Config;
   kill: boolean;
-  trades: Map<string, Trade>;
-  windows: Map<string, WindowRecord>;
+  positions: Map<string, Position>;
+  cycles: Map<string, CycleRecord>;
 }
 
 // Hung off globalThis so it survives Next.js module reloads in dev, which would
@@ -60,8 +60,8 @@ function memoryState(): MemoryState {
     g.__visionStore = {
       config: { ...DEFAULT_CONFIG },
       kill: false,
-      trades: new Map(),
-      windows: new Map(),
+      positions: new Map(),
+      cycles: new Map(),
     };
   }
   return g.__visionStore;
@@ -85,22 +85,22 @@ class MemoryStore implements Store {
   async setKillSwitch(on: boolean) {
     memoryState().kill = on;
   }
-  async listTrades() {
-    return [...memoryState().trades.values()].sort((a, b) => a.t - b.t).slice(-MAX_ROWS);
+  async listPositions() {
+    return [...memoryState().positions.values()].sort((a, b) => a.openedAt - b.openedAt).slice(-MAX_ROWS);
   }
-  async upsertTrade(trade: Trade) {
-    memoryState().trades.set(trade.id, trade);
+  async upsertPosition(p: Position) {
+    memoryState().positions.set(p.id, p);
   }
-  async listWindows() {
-    return [...memoryState().windows.values()].sort((a, b) => a.startMs - b.startMs).slice(-MAX_ROWS);
+  async listCycles() {
+    return [...memoryState().cycles.values()].sort((a, b) => a.startMs - b.startMs).slice(-MAX_ROWS);
   }
-  async upsertWindow(w: WindowRecord) {
-    memoryState().windows.set(w.id, w);
+  async upsertCycle(c: CycleRecord) {
+    memoryState().cycles.set(c.id, c);
   }
   async reset() {
     const st = memoryState();
-    st.trades.clear();
-    st.windows.clear();
+    st.positions.clear();
+    st.cycles.clear();
   }
 }
 
@@ -169,22 +169,22 @@ class UpstashStore implements Store {
   async setKillSwitch(on: boolean) {
     await this.command(['SET', KEYS.kill, on ? '1' : '0']);
   }
-  async listTrades() {
-    const rows = await this.command<Record<string, string>>(['HGETALL', KEYS.trades]);
-    return parseHash<Trade>(rows).sort((a, b) => a.t - b.t).slice(-MAX_ROWS);
+  async listPositions() {
+    const rows = await this.command<Record<string, string>>(['HGETALL', KEYS.positions]);
+    return parseHash<Position>(rows).sort((a, b) => a.openedAt - b.openedAt).slice(-MAX_ROWS);
   }
-  async upsertTrade(trade: Trade) {
-    await this.command(['HSET', KEYS.trades, trade.id, JSON.stringify(trade)]);
+  async upsertPosition(p: Position) {
+    await this.command(['HSET', KEYS.positions, p.id, JSON.stringify(p)]);
   }
-  async listWindows() {
-    const rows = await this.command<Record<string, string>>(['HGETALL', KEYS.windows]);
-    return parseHash<WindowRecord>(rows).sort((a, b) => a.startMs - b.startMs).slice(-MAX_ROWS);
+  async listCycles() {
+    const rows = await this.command<Record<string, string>>(['HGETALL', KEYS.cycles]);
+    return parseHash<CycleRecord>(rows).sort((a, b) => a.startMs - b.startMs).slice(-MAX_ROWS);
   }
-  async upsertWindow(w: WindowRecord) {
-    await this.command(['HSET', KEYS.windows, w.id, JSON.stringify(w)]);
+  async upsertCycle(c: CycleRecord) {
+    await this.command(['HSET', KEYS.cycles, c.id, JSON.stringify(c)]);
   }
   async reset() {
-    await this.command(['DEL', KEYS.trades, KEYS.windows]);
+    await this.command(['DEL', KEYS.positions, KEYS.cycles]);
   }
 }
 
@@ -192,9 +192,7 @@ function parseHash<T>(rows: Record<string, string> | string[] | null): T[] {
   if (!rows) return [];
   // Upstash returns HGETALL as a flat array in some versions and an object in
   // others; both shapes are handled rather than pinned to one client version.
-  const values = Array.isArray(rows)
-    ? rows.filter((_, i) => i % 2 === 1)
-    : Object.values(rows);
+  const values = Array.isArray(rows) ? rows.filter((_, i) => i % 2 === 1) : Object.values(rows);
   const out: T[] = [];
   for (const v of values) {
     try {
@@ -205,7 +203,6 @@ function parseHash<T>(rows: Record<string, string> | string[] | null): T[] {
   }
   return out;
 }
-
 
 let cached: Store | null = null;
 

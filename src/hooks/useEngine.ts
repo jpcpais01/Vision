@@ -3,11 +3,9 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Engine, type Snapshot } from '@/lib/engine';
 import { DEFAULT_CONFIG, sanitize } from '@/lib/config';
-import type { Config, Trade, WindowRecord } from '@/lib/types';
+import type { Config, CycleRecord, Position } from '@/lib/types';
 
 export interface Health {
-  capabilities: { liveTradingConfigured: boolean; liveTradingAllowed: boolean };
-  liveBlockers: string[];
   storage: string;
   storageOk: boolean;
 }
@@ -25,8 +23,7 @@ export function useEngine() {
 
   tokenRef.current = token;
   const headers = useCallback(
-    (): Record<string, string> =>
-      tokenRef.current ? { 'x-vision-token': tokenRef.current } : {},
+    (): Record<string, string> => (tokenRef.current ? { 'x-vision-token': tokenRef.current } : {}),
     []
   );
 
@@ -68,7 +65,7 @@ export function useEngine() {
 
       const s = await fetch('/api/state', { headers: headers(), cache: 'no-store' });
       if (s.ok && engine) {
-        engine.hydrate((await s.json()) as { trades?: Trade[]; windows?: WindowRecord[] });
+        engine.hydrate((await s.json()) as { positions?: Position[]; cycles?: CycleRecord[] });
       }
       setError(null);
     } catch (err) {
@@ -103,8 +100,8 @@ export function useEngine() {
           engine?.setConfig(server);
         }
       } catch {
-        // The engine already has it; limits are re-checked server-side per
-        // order regardless, so a failed sync cannot loosen anything.
+        // The engine already has it; limits are re-checked server-side too,
+        // so a failed sync cannot loosen anything.
       }
     },
     [config, engine, headers]
@@ -163,41 +160,19 @@ const EMPTY: Snapshot = {
   feedError: null,
   price: null,
   priceAt: 0,
-  priceSource: null,
-  chainlinkLive: false,
   ticks: [],
   volPct: null,
-  cycle: {
-    market: null,
-    phase: 'stopped',
-    barrier: null,
-    barrierSource: null,
-    sim: null,
-    askUp: null,
-    askDown: null,
-    edgeUp: null,
-    edgeDown: null,
-    tradeId: null,
-    skipReason: null,
-    track: [],
-  },
-  secondsLeft: null,
-  secondsToOpen: null,
-  calibratingSecondsLeft: null,
-  quotes: { up: { bid: null, ask: null, askSize: 0 }, down: { bid: null, ask: null, askSize: 0 } },
-  trades: [],
-  windows: [],
+  cycleStart: null,
+  cycleEnd: null,
+  cycleStartPrice: null,
+  elapsedSec: null,
+  band: null,
+  tailProb: null,
+  skipReason: null,
+  busy: null,
+  position: null,
+  positions: [],
+  cycles: [],
   logs: [],
-  stats: {
-    trades: 0,
-    wins: 0,
-    losses: 0,
-    open: 0,
-    winRate: 0,
-    pnl: 0,
-    today: 0,
-    windows: 0,
-    brier: null,
-    scored: 0,
-  },
+  stats: { positions: 0, wins: 0, losses: 0, open: 0, winRate: 0, pnl: 0, today: 0, cycles: 0 },
 };

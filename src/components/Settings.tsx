@@ -3,9 +3,10 @@
 import { useEffect } from 'react';
 import type { Config } from '@/lib/types';
 import type { Health } from '@/hooks/useEngine';
+import { CYCLE_SEC } from '@/lib/config';
 import { cx } from '@/lib/format';
 
-/** Six settings. If a knob has no clear reason to be turned, it is not here. */
+/** Four things. If a knob has no clear reason to be turned, it is not here. */
 export function Settings({
   config,
   health,
@@ -25,8 +26,6 @@ export function Settings({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const liveReady = (health?.liveBlockers.length ?? 1) === 0;
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-0 sm:items-center sm:p-6"
@@ -44,36 +43,6 @@ export function Settings({
         </div>
 
         <div className="space-y-5 p-5">
-          <div>
-            <div className="label mb-2">Mode</div>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                className={cx('mode', config.mode === 'PAPER' && 'mode-on')}
-                onClick={() => onChange({ mode: 'PAPER' })}
-              >
-                <span className="font-semibold">Paper</span>
-                <span className="text-[11px] opacity-70">Real prices, fake money</span>
-              </button>
-              <button
-                className={cx('mode', config.mode === 'LIVE' && 'mode-on-live')}
-                disabled={!liveReady}
-                onClick={() => liveReady && onChange({ mode: 'LIVE' })}
-              >
-                <span className="font-semibold">Live</span>
-                <span className="text-[11px] opacity-70">
-                  {liveReady ? 'Real money' : 'Not set up'}
-                </span>
-              </button>
-            </div>
-            {!liveReady && health?.liveBlockers.length ? (
-              <ul className="mt-2 space-y-0.5 text-[11px] text-[var(--muted)]">
-                {health.liveBlockers.map((b) => (
-                  <li key={b}>· {b}</li>
-                ))}
-              </ul>
-            ) : null}
-          </div>
-
           <label className="flex items-center justify-between gap-4">
             <span>
               <span className="block text-sm font-medium">Trade automatically</span>
@@ -102,19 +71,30 @@ export function Settings({
           </label>
 
           <Slider
-            label="Minimum edge"
-            hint="How far ahead of the market price we need to be before buying."
-            value={config.minEdge * 100}
+            label="Flag when probability drops below"
+            hint="How unlikely the current move has to be, versus the simulation, before it's a signal."
+            value={Math.round(config.unlikeliness * 100)}
             min={1}
-            max={25}
+            max={40}
             step={1}
             suffix="%"
-            onChange={(v) => onChange({ minEdge: v / 100 })}
+            onChange={(v) => onChange({ unlikeliness: v / 100 })}
+          />
+
+          <Slider
+            label="Close trades at second"
+            hint={`Force-close whatever's open this many seconds into the ${CYCLE_SEC}s cycle.`}
+            value={config.closeAtSecond}
+            min={1}
+            max={CYCLE_SEC - 1}
+            step={1}
+            suffix="s"
+            onChange={(v) => onChange({ closeAtSecond: v })}
           />
 
           <Slider
             label="Stake per trade"
-            hint="Fixed amount risked on each position."
+            hint="Fixed USD amount risked on each position."
             value={config.stakeUsd}
             min={1}
             max={500}
@@ -123,33 +103,11 @@ export function Settings({
             onChange={(v) => onChange({ stakeUsd: v })}
           />
 
-          <Slider
-            label="Stop after losing"
-            hint="No more trades today once the day is down this much."
-            value={config.maxDailyLossUsd}
-            min={10}
-            max={2000}
-            step={10}
-            prefix="$"
-            onChange={(v) => onChange({ maxDailyLossUsd: v })}
-          />
-
-          <Slider
-            label="Don’t enter with less than"
-            hint="Seconds left on the clock."
-            value={config.minSecondsLeft}
-            min={5}
-            max={120}
-            step={5}
-            suffix="s"
-            onChange={(v) => onChange({ minSecondsLeft: v })}
-          />
-
           <div className="border-t border-[var(--line)] pt-4">
             <button
               className="btn btn-danger w-full justify-center py-2"
               onClick={() => {
-                if (confirm('Delete all trades and history? This cannot be undone.')) onReset();
+                if (confirm('Delete all positions and history? This cannot be undone.')) onReset();
               }}
             >
               Clear all history

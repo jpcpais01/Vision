@@ -2,11 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import { useEngine } from '@/hooks/useEngine';
-import { WINDOW_SEC, CALIBRATION_MIN_SEC } from '@/lib/config';
-import { PriceChart, ProbChart } from '@/components/Charts';
+import { CYCLE_SEC, HISTORY_SEC } from '@/lib/config';
+import { CycleChart } from '@/components/Charts';
 import { Settings } from '@/components/Settings';
-import { clock, cx, pct, pts, signed, time, usd } from '@/lib/format';
-import type { BarrierSource, Quote, Side } from '@/lib/types';
+import { clock, cx, pct, signed, time, usd } from '@/lib/format';
+import type { Position } from '@/lib/types';
 
 export default function App() {
   const v = useEngine();
@@ -14,7 +14,8 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showLog, setShowLog] = useState(false);
 
-  // Tick once a second so the countdown stays honest between engine updates.
+  // Tick twice a second so the countdown and elapsed-time reads stay honest
+  // between engine updates.
   const [, force] = useState(0);
   useEffect(() => {
     const id = setInterval(() => force((n) => n + 1), 500);
@@ -23,9 +24,9 @@ export default function App() {
 
   if (v.needsToken) return <TokenGate onSubmit={v.setToken} />;
 
-  const c = s.cycle;
-  const live = config.mode === 'LIVE';
-  const calibrating = c.phase === 'calibrating';
+  const distance = s.price !== null && s.cycleStartPrice !== null ? s.price - s.cycleStartPrice : null;
+  const secondsToRoll = s.elapsedSec !== null ? Math.max(0, CYCLE_SEC - s.elapsedSec) : null;
+  const signalNow = s.tailProb !== null && s.tailProb < config.unlikeliness;
 
   return (
     <main className="mx-auto flex min-h-screen max-w-[880px] flex-col gap-4 px-4 pb-16 pt-5">
@@ -36,32 +37,19 @@ export default function App() {
             V
           </span>
           <span className="text-[15px] font-semibold tracking-tight">Vision</span>
-          <span
-            className={cx(
-              'rounded-md px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide',
-              live ? 'bg-[var(--down-bg)] text-[var(--down)]' : 'bg-[var(--accent-bg)] text-[var(--accent)]'
-            )}
-          >
-            {config.mode}
+          <span className="rounded-md bg-[var(--accent-bg)] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[var(--accent)]">
+            Paper
           </span>
         </div>
 
-        <span className="flex items-center gap-1.5 text-xs text-[var(--muted)]">
+        <span className="flex items-center gap-1.5 text-xs text-[var(--muted)]" title="Binance's live trade stream">
           <span
             className={cx(
               'h-1.5 w-1.5 rounded-full',
               s.connected ? 'bg-[var(--up)]' : s.running ? 'bg-[var(--warn)]' : 'bg-[var(--line)]'
             )}
           />
-          {s.connected ? 'live' : s.running ? 'connecting' : 'offline'}
-        </span>
-
-        <span
-          className="flex items-center gap-1.5 text-xs text-[var(--muted)]"
-          title="Polymarket's own live Chainlink relay — the exact source it settles on, and the only price source anywhere in this app"
-        >
-          <span className={cx('h-1.5 w-1.5 rounded-full', s.chainlinkLive ? 'bg-[var(--up)]' : 'bg-[var(--line)]')} />
-          Chainlink {s.chainlinkLive ? 'live' : 'offline'}
+          Binance {s.connected ? 'live' : s.running ? 'connecting' : 'offline'}
         </span>
 
         <div className="ml-auto flex items-center gap-2">
@@ -90,159 +78,115 @@ export default function App() {
       {s.feedError ? <Banner tone="warn">Price feed: {s.feedError}</Banner> : null}
       {config.killSwitch ? <Banner tone="down">Stopped. Nothing will trade until you reset.</Banner> : null}
 
-      {calibrating ? (
-        <section className="card p-5">
-          <div className="label">Calibrating</div>
-          <div className="mt-1 flex items-baseline gap-3">
-            <span className="num text-[34px] font-semibold leading-none">
-              {clock(s.calibratingSecondsLeft)}
-            </span>
-            <span className="text-sm text-[var(--muted)]">left</span>
-          </div>
-          <p className="mt-3 text-sm leading-relaxed text-[var(--muted)]">
-            There is no seeded history — the price tape is built entirely from what has actually
-            been observed since you pressed Start. It won’t trade its first window until it has
-            gathered {CALIBRATION_MIN_SEC / 60} minute{CALIBRATION_MIN_SEC === 60 ? '' : 's'} of real ticks, so the volatility estimate
-            behind every probability is real rather than a generic placeholder.
-          </p>
-          <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-[var(--line)]">
-            <div
-              className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-1000"
-              style={{
-                width: `${Math.min(100, Math.max(0, (1 - (s.calibratingSecondsLeft ?? CALIBRATION_MIN_SEC) / CALIBRATION_MIN_SEC) * 100))}%`,
-              }}
-            />
-          </div>
-        </section>
-      ) : null}
-
-      {/* ── The window ──────────────────────────────────────── */}
+      {/* ── The cycle ───────────────────────────────────────── */}
       <section className="card p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="label">Bitcoin</div>
             <div className="mt-0.5 flex items-baseline gap-3">
-              <span className="num text-[34px] font-semibold leading-none">
-                {s.price ? usd(s.price) : '—'}
-              </span>
-              {c.barrier && s.price ? (
+              <span className="num text-[34px] font-semibold leading-none">{s.price ? usd(s.price) : '—'}</span>
+              {distance !== null ? (
                 <span
-                  className={cx(
-                    'num text-base font-semibold',
-                    s.price > c.barrier ? 'text-[var(--up)]' : 'text-[var(--down)]'
-                  )}
+                  className={cx('num text-base font-semibold', distance >= 0 ? 'text-[var(--up)]' : 'text-[var(--down)]')}
                 >
-                  {s.price > c.barrier ? '+' : '−'}${Math.abs(s.price - c.barrier).toFixed(2)}
+                  {distance >= 0 ? '+' : '−'}${Math.abs(distance).toFixed(2)}
                 </span>
               ) : null}
             </div>
-            {c.barrier ? (
-              <div className="num mt-1 text-xs text-[var(--muted)]">
-                needs to beat {usd(c.barrier)}
-                {c.barrierSource ? ` · ${barrierSourceLabel(c.barrierSource)}` : ''}
-              </div>
+            {s.cycleStartPrice !== null ? (
+              <div className="num mt-1 text-xs text-[var(--muted)]">from {usd(s.cycleStartPrice)} this cycle</div>
             ) : null}
             {s.price ? (
               <div className="num mt-1 text-xs text-[var(--muted)]">
-                {s.priceSource ? barrierSourceLabel(s.priceSource) : ''}, updated{' '}
-                {Math.max(0, Math.round((Date.now() - s.priceAt) / 1000))}s ago
+                Binance, updated {Math.max(0, Math.round((Date.now() - s.priceAt) / 1000))}s ago
               </div>
             ) : null}
           </div>
 
           <div className="text-right">
-            <div className="label">{c.market ? 'Closes in' : 'Next window'}</div>
-            <div className="num mt-0.5 text-[34px] font-semibold leading-none">
-              {c.market ? clock(s.secondsLeft) : clock(s.secondsToOpen)}
-            </div>
+            <div className="label">Next cycle in</div>
+            <div className="num mt-0.5 text-[34px] font-semibold leading-none">{clock(secondsToRoll)}</div>
             <div className="mt-1 text-xs text-[var(--muted)]">{phaseLabel(s)}</div>
           </div>
         </div>
 
-        {c.market ? (
+        {secondsToRoll !== null ? (
           <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-[var(--line)]">
             <div
               className="h-full rounded-full bg-[var(--accent)] transition-[width] duration-500"
-              style={{
-                width: `${Math.min(100, Math.max(0, ((WINDOW_SEC - (s.secondsLeft ?? 0)) / WINDOW_SEC) * 100))}%`,
-              }}
+              style={{ width: `${Math.min(100, Math.max(0, ((CYCLE_SEC - secondsToRoll) / CYCLE_SEC) * 100))}%` }}
             />
-          </div>
-        ) : null}
-
-        {s.running && !calibrating ? (
-          <div className="mt-4 flex items-center gap-6 border-t border-[var(--line)] pt-4">
-            <OrderBookSide side="UP" quote={s.quotes.up} />
-            <OrderBookSide side="DOWN" quote={s.quotes.down} />
           </div>
         ) : null}
 
         {s.running ? (
           <div className="mt-4">
-            <PriceChart
+            <CycleChart
               ticks={s.ticks}
-              barrier={c.barrier}
-              startMs={c.market?.startMs ?? null}
-              endMs={c.market?.endMs ?? null}
+              cycleStart={s.cycleStart}
+              cycleStartPrice={s.cycleStartPrice}
+              band={s.band}
+              closeAtSecond={config.closeAtSecond}
+              position={s.position}
             />
           </div>
         ) : (
           <p className="mt-4 border-t border-[var(--line)] pt-4 text-sm leading-relaxed text-[var(--muted)]">
-            Press <strong className="text-[var(--text)]">Start</strong> and it spends
-            {' '}{CALIBRATION_MIN_SEC / 60} minute{CALIBRATION_MIN_SEC === 60 ? '' : 's'} gathering real price data, then waits for the
-            next 5-minute window to open — it never joins one already running. The barrier is
-            read from Polymarket’s own settlement source, never guessed, and a driftless
-            Monte Carlo simulation re-checks the odds against the live price every second. It
-            buys only when that beats the market’s own price by enough to be worth it.
+            Press <strong className="text-[var(--text)]">Start</strong> and every {CYCLE_SEC} seconds it takes the
+            live Binance price as a fresh reference, simulates 10,000 random paths forward from it using the
+            realised volatility of the last {HISTORY_SEC} one-second prices, and watches whether the actual price
+            strays further than the simulation thinks is likely. When it does, that's the signal — buy or sell,
+            betting on reversion to more probable levels, closed out before the cycle ends.
           </p>
         )}
       </section>
 
       {/* ── The read ────────────────────────────────────────── */}
-      {s.running && !calibrating ? (
+      {s.running ? (
         <section className="card p-5">
-          {!c.sim ? (
-            <div className="py-6 text-center text-sm text-[var(--muted)]">
-              The simulation starts the moment a window opens.
-            </div>
-          ) : (
-            <>
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className="label">Monte Carlo read</span>
-                <span className="num text-sm text-[var(--muted)]">
-                  {s.volPct ? `${s.volPct.toFixed(0)}% volatility — avg of the last 10×15s candles` : ''}
-                </span>
-              </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="label">Live read</span>
+            <span className="num text-sm text-[var(--muted)]">
+              {s.volPct ? `${s.volPct.toFixed(0)}% volatility — realised, last ${HISTORY_SEC}s` : ''}
+            </span>
+          </div>
 
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                <SideRead side="UP" prob={c.sim.pUp} ask={c.askUp} edge={c.edgeUp} minEdge={config.minEdge} />
-                <SideRead
-                  side="DOWN"
-                  prob={1 - c.sim.pUp}
-                  ask={c.askDown}
-                  edge={c.edgeDown}
-                  minEdge={config.minEdge}
-                />
-              </div>
-
-              <div className="mt-4">
-                <ProbChart track={c.track} startMs={c.market?.startMs ?? null} />
-              </div>
-
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-                {c.tradeId && c.tradeId !== 'pending' ? (
-                  <Chip tone="up">In position</Chip>
-                ) : (c.edgeUp !== null && c.edgeUp > config.minEdge) ||
-                  (c.edgeDown !== null && c.edgeDown > config.minEdge) ? (
-                  <Chip tone="up">
-                    Edge found — buying {c.edgeUp !== null && c.edgeUp >= (c.edgeDown ?? -Infinity) ? 'UP' : 'DOWN'}
-                  </Chip>
-                ) : (
-                  <Chip tone="muted">{c.skipReason ?? 'Watching'}</Chip>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <div className="rounded-lg border border-[var(--line)] p-3">
+              <div className="label">Current probability</div>
+              <div
+                className={cx(
+                  'num mt-1 text-2xl font-bold',
+                  signalNow ? 'text-[var(--down)]' : 'text-[var(--text)]'
                 )}
+              >
+                {s.tailProb !== null ? pct(s.tailProb, 1) : '—'}
               </div>
-            </>
-          )}
+              <div className="mt-0.5 text-xs text-[var(--muted)]">
+                triggers a trade below {pct(config.unlikeliness, 0)}
+              </div>
+            </div>
+            <div className="rounded-lg border border-[var(--line)] p-3">
+              <div className="label">{s.position ? 'Open position' : 'Position'}</div>
+              {s.position ? (
+                <PositionRead position={s.position} price={s.price} />
+              ) : (
+                <div className="num mt-1 text-2xl font-bold text-[var(--muted)]">none</div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+            {s.busy ? (
+              <Chip tone="muted">{s.busy === 'opening' ? 'Opening…' : 'Closing…'}</Chip>
+            ) : s.position ? (
+              <Chip tone="up">In position — {s.position.direction}</Chip>
+            ) : signalNow ? (
+              <Chip tone="up">Signal found — {s.price !== null && s.cycleStartPrice !== null && s.price > s.cycleStartPrice ? 'selling (SHORT)' : 'buying (LONG)'}</Chip>
+            ) : (
+              <Chip tone="muted">{s.skipReason ?? 'Watching'}</Chip>
+            )}
+          </div>
         </section>
       ) : null}
 
@@ -254,69 +198,50 @@ export default function App() {
           tone={s.stats.today > 0 ? 'up' : s.stats.today < 0 ? 'down' : 'muted'}
           strong
         />
-        <Figure label="All time" value={signed(s.stats.pnl)} hint={`${s.stats.trades} trades`} />
+        <Figure label="All time" value={signed(s.stats.pnl)} hint={`${s.stats.positions} positions`} />
         <Figure
           label="Win rate"
           value={s.stats.wins + s.stats.losses > 0 ? pct(s.stats.winRate) : '—'}
           hint={`${s.stats.wins}W ${s.stats.losses}L`}
         />
-        <Figure
-          label="Calibration"
-          value={s.stats.scored >= 5 ? s.stats.brier!.toFixed(3) : '—'}
-          hint={s.stats.scored >= 5 ? `Brier · ${s.stats.scored} windows` : 'needs 5+ windows'}
-        />
+        <Figure label="Cycles" value={String(s.stats.cycles)} hint={`${CYCLE_SEC}s each`} />
       </section>
 
       {/* ── History ─────────────────────────────────────────── */}
-      {s.windows.length > 0 ? (
+      {s.positions.length > 0 ? (
         <section className="card overflow-hidden">
           <div className="border-b border-[var(--line)] px-5 py-3">
-            <span className="label">Recent windows</span>
+            <span className="label">Recent positions</span>
           </div>
           <div className="max-h-[300px] overflow-y-auto">
-            {[...s.windows].reverse().slice(0, 40).map((w) => (
+            {[...s.positions].reverse().slice(0, 40).map((p) => (
               <div
-                key={w.id}
+                key={p.id}
                 className="flex items-center gap-3 border-b border-[var(--line)] px-5 py-2.5 text-sm last:border-0"
                 title={
-                  w.close !== null
-                    ? `${usd(w.barrier)} (${barrierSourceLabel(w.barrierSource)}) → ${usd(w.close)}` +
-                      (w.closeSource ? ` (${barrierSourceLabel(w.closeSource)})` : '')
-                    : undefined
+                  p.closePrice !== null ? `${usd(p.openPrice)} → ${usd(p.closePrice)}` : `opened at ${usd(p.openPrice)}`
                 }
               >
-                <span className="num w-16 shrink-0 text-xs text-[var(--muted)]">
-                  {time(w.startMs)}
-                </span>
+                <span className="num w-16 shrink-0 text-xs text-[var(--muted)]">{time(p.openedAt)}</span>
                 <span
                   className={cx(
-                    'w-12 shrink-0 text-xs font-semibold',
-                    w.outcome === 'UP' ? 'text-[var(--up)]' : 'text-[var(--down)]'
+                    'w-14 shrink-0 text-xs font-semibold',
+                    p.direction === 'LONG' ? 'text-[var(--up)]' : 'text-[var(--down)]'
                   )}
                 >
-                  {w.outcome ?? '—'}
+                  {p.direction}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-xs text-[var(--muted)]">
-                  {w.finalPUp != null ? (
-                    <>
-                      simulated {pct(w.finalPUp)} UP
-                      {w.outcome ? ((w.finalPUp >= 0.5) === (w.outcome === 'UP') ? ' ✓' : ' ✗') : ''}
-                    </>
-                  ) : (
-                    (w.skipReason ?? 'no read')
-                  )}
+                  triggered at {pct(p.triggerProb, 1)}
+                  {p.status === 'OPEN' ? ' · still open' : ''}
                 </span>
                 <span
                   className={cx(
                     'num shrink-0 text-sm font-semibold',
-                    w.pnl == null
-                      ? 'text-[var(--muted)]'
-                      : w.pnl >= 0
-                        ? 'text-[var(--up)]'
-                        : 'text-[var(--down)]'
+                    p.pnl == null ? 'text-[var(--muted)]' : p.pnl >= 0 ? 'text-[var(--up)]' : 'text-[var(--down)]'
                   )}
                 >
-                  {w.pnl == null ? '—' : signed(w.pnl)}
+                  {p.pnl == null ? '—' : signed(p.pnl)}
                 </span>
               </div>
             ))}
@@ -359,12 +284,11 @@ export default function App() {
       </section>
 
       <p className="px-1 text-center text-xs leading-relaxed text-[var(--muted)]">
-        Every price on this screen — the barrier, the running display, the volatility estimate,
-        the close — comes from the same tape: Polymarket’s own live Chainlink relay, the exact
-        source these markets settle on, falling back to the on-chain Chainlink read only when the
-        relay has nothing fresh. No other exchange’s data is ever blended in anywhere. There is no
-        forecasting model — only a driftless Monte Carlo over realised volatility. Paper mode
-        simulates fills against the real order book. Not financial advice.
+        Every {CYCLE_SEC} seconds, a fresh driftless Monte Carlo simulates 10,000 paths from the live Binance price,
+        using the realised volatility of the last {HISTORY_SEC} one-second prices. When the actual price strays
+        further than the simulation gives much chance of, it bets on reversion — buying a dip, selling a spike —
+        closed out before the cycle ends. Paper trading only, fills walked against Binance's real order book. Not
+        financial advice.
       </p>
 
       {showSettings ? (
@@ -380,56 +304,33 @@ export default function App() {
   );
 }
 
-function SideRead({
-  side,
-  prob,
-  ask,
-  edge,
-  minEdge,
-}: {
-  side: Side;
-  prob: number;
-  ask: number | null;
-  edge: number | null;
-  minEdge: number;
-}) {
-  const tone = side === 'UP' ? 'text-[var(--up)]' : 'text-[var(--down)]';
+function PositionRead({ position, price }: { position: Position; price: number | null }) {
+  const unrealized =
+    price !== null
+      ? position.direction === 'LONG'
+        ? (price - position.openPrice) * position.qty
+        : (position.openPrice - price) * position.qty
+      : null;
   return (
-    <div className="rounded-lg border border-[var(--line)] p-3">
-      <div className="flex items-baseline justify-between">
-        <span className={cx('text-xs font-semibold', tone)}>{side}</span>
-        <span className="num text-lg font-bold">{pct(prob, 1)}</span>
+    <>
+      <div className={cx('num mt-1 text-2xl font-bold', position.direction === 'LONG' ? 'text-[var(--up)]' : 'text-[var(--down)]')}>
+        {position.direction}
       </div>
-      <div className="mt-1 flex items-baseline justify-between text-xs text-[var(--muted)]">
-        <span>market {ask != null ? pct(ask, 0) : '—'}</span>
-        <span className={edge !== null && edge > minEdge ? 'font-semibold text-[var(--up)]' : ''}>
-          edge {pts(edge)}
-        </span>
+      <div className="mt-0.5 text-xs text-[var(--muted)]">
+        {position.qty.toFixed(5)} BTC at {usd(position.openPrice)}
+        {unrealized !== null ? ` · ${signed(unrealized)} unrealised` : ''}
       </div>
-    </div>
+    </>
   );
-}
-
-function barrierSourceLabel(s: BarrierSource): string {
-  return s === 'chainlink-live' ? "Polymarket's live relay" : 'on-chain Chainlink';
 }
 
 function phaseLabel(s: ReturnType<typeof useEngine>['snapshot']): string {
   if (!s.running) return 'stopped';
-  switch (s.cycle.phase) {
-    case 'calibrating':
-      return 'calibrating';
-    case 'waiting-for-window':
-      return s.secondsToOpen != null ? 'waiting for a fresh window' : 'looking for the next window';
-    case 'tracking':
-      return 'tracking';
-    case 'in-position':
-      return 'holding a position';
-    case 'settling':
-      return 'settling';
-    default:
-      return '';
-  }
+  if (s.cycleStartPrice === null) return 'waiting for a price';
+  if (s.busy === 'opening') return 'opening a position';
+  if (s.busy === 'closing') return 'closing a position';
+  if (s.position) return 'holding a position';
+  return 'watching';
 }
 
 function Figure({
@@ -482,36 +383,10 @@ function Banner({ children, tone }: { children: React.ReactNode; tone: 'warn' | 
     <div
       className={cx(
         'rounded-lg px-4 py-2.5 text-sm',
-        tone === 'down'
-          ? 'bg-[var(--down-bg)] text-[var(--down)]'
-          : 'bg-[var(--warn-bg)] text-[var(--warn)]'
+        tone === 'down' ? 'bg-[var(--down-bg)] text-[var(--down)]' : 'bg-[var(--warn-bg)] text-[var(--warn)]'
       )}
     >
       {children}
-    </div>
-  );
-}
-
-/** The current buy price for one side of the market — what a share costs right now. */
-function OrderBookSide({ side, quote }: { side: Side; quote: Quote }) {
-  const up = side === 'UP';
-  const color = up ? 'text-[var(--up)]' : 'text-[var(--down)]';
-  return (
-    <div className="flex items-baseline gap-2">
-      <span className={cx('text-xs font-semibold', color)}>{side}</span>
-      {quote.ask !== null ? (
-        <>
-          <span className="num text-lg font-semibold leading-none">
-            {(quote.ask * 100).toFixed(0)}¢
-          </span>
-          <span className="text-[11px] text-[var(--muted)]">
-            to buy
-            {quote.bid !== null ? ` · ${(quote.bid * 100).toFixed(0)}¢ bid` : ''}
-          </span>
-        </>
-      ) : (
-        <span className="text-xs text-[var(--muted)]">no offers</span>
-      )}
     </div>
   );
 }
@@ -531,13 +406,7 @@ function TokenGate({ onSubmit }: { onSubmit: (v: string) => void }) {
         <p className="text-xs text-[var(--muted)]">
           This deployment is protected. The token stays in this tab and is sent as a header.
         </p>
-        <input
-          type="password"
-          className="input"
-          autoFocus
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-        />
+        <input type="password" className="input" autoFocus value={value} onChange={(e) => setValue(e.target.value)} />
         <button type="submit" className="btn btn-primary w-full justify-center py-2">
           Unlock
         </button>

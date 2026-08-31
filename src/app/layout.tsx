@@ -3,8 +3,8 @@ import Script from 'next/script';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Vision — BTC 5m',
-  description: 'Trades Polymarket Bitcoin 5-minute up/down markets.',
+  title: 'Vision — BTC mean reversion',
+  description: 'Paper-trades Bitcoin mean reversion against a live Monte Carlo simulation, on Binance.',
   robots: { index: false, follow: false },
   appleWebApp: {
     capable: true,

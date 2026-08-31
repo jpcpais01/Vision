@@ -2,9 +2,9 @@ import type { MetadataRoute } from 'next';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'Vision — Polymarket BTC 5m',
+    name: 'Vision — BTC mean reversion',
     short_name: 'Vision',
-    description: "Trades Polymarket's Bitcoin 5-minute up/down markets.",
+    description: 'Paper-trades Bitcoin mean reversion against a live Monte Carlo simulation, on Binance.',
     start_url: '/',
     display: 'standalone',
     background_color: '#0b0e14',

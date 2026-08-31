@@ -1,16 +1,12 @@
 import { strict as assert } from 'node:assert';
 import test from 'node:test';
-import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
-import { simulate } from '../montecarlo';
+import { bandFromDistribution, simulateCycle, tailProbability } from '../montecarlo';
 import { normCdf, normInv } from '../math/normal';
 import { NormalSampler, Rng } from '../math/rng';
-import { fillGaps, returns, toBars, volatility } from '../bars';
-import { fill, quote } from '../book';
-import { discover } from '../market';
-import { chainlink } from '../chainlink';
+import { toSeconds, volatility } from '../series';
+import { fillQty, fillUsd, quote } from '../binanceBook';
 import { DEFAULT_CONFIG, sanitize } from '../config';
-import type { Bar } from '../types';
+import type { Tick } from '../types';
 
 // ── Maths ───────────────────────────────────────────────────────────────────
 
@@ -34,338 +30,140 @@ test('the sampler produces unit-variance draws', () => {
   assert.ok(Math.abs(sq / n - 1) < 0.03);
 });
 
-// ── The only model: a driftless Monte Carlo ─────────────────────────────────
+// ── The only model: a driftless Monte Carlo over the full cycle path ───────
 
-const SIGMA = 0.00002; // roughly 35% annualised
+const SIGMA = 0.0003; // per-second, roughly 30% annualised
+const START = 100_000;
 
-function sim(over: Partial<Parameters<typeof simulate>[0]> = {}) {
-  return simulate({
-    barrier: 100_000,
-    current: 100_000,
-    remainingSec: 300,
-    sigma: SIGMA,
-    paths: 40_000,
-    seed: 7,
-    ...over,
-  });
-}
+test('the tail probability matches the analytic lognormal tail', () => {
+  // For a driftless GBM the one-sided tail probability at step s has a closed
+  // form: 1 - Phi(logReturn / (sigma*sqrt(s))) above, Phi(...) below. The
+  // literal Monte Carlo simulation should agree with it, within sampling noise.
+  const dist = simulateCycle({ startPrice: START, sigma: SIGMA, cycleSec: 20, paths: 100_000, seed: 7 });
 
-test('at the barrier, with nothing else known, the answer is a coin flip', () => {
-  assert.ok(Math.abs(sim().pUp - 0.5) < 0.01);
-});
-
-test('there is no drift term — an identical run has nothing to disagree with', () => {
-  // The whole point of removing the forecasting step: the simulation takes no
-  // view of its own. Two runs with the same inputs and the same seed must be
-  // identical, and a run started exactly at the barrier has no reason to lean
-  // either way regardless of how many times it is re-seeded.
-  for (const seed of [1, 2, 3, 4, 5]) {
-    const r = sim({ seed });
-    assert.ok(Math.abs(r.pUp - 0.5) < 0.02, `seed ${seed}: expected ~0.5, got ${r.pUp}`);
+  for (const [sec, price] of [
+    [10, START * 1.002],
+    [10, START * 0.998],
+    [20, START * 1.004],
+  ] as const) {
+    const got = tailProbability(dist, sec, START, price);
+    const z = Math.log(price / START) / (SIGMA * Math.sqrt(sec));
+    const analytic = price >= START ? 1 - normCdf(z) : normCdf(z);
+    assert.ok(Math.abs(got - analytic) < 0.02, `sec=${sec} price=${price}: got ${got}, analytic ${analytic}`);
   }
 });
 
-test('being above the barrier means P(UP) is above a half, and vice versa', () => {
-  // A move small relative to sigma*sqrt(t), so both cases land meaningfully
-  // between 0 and 1 rather than saturating at the extremes.
-  const above = sim({ current: 100_010, remainingSec: 120 });
-  const below = sim({ current: 99_990, remainingSec: 120 });
-  assert.ok(above.pUp > 0.5, `expected > 0.5, got ${above.pUp}`);
-  assert.ok(below.pUp < 0.5, `expected < 0.5, got ${below.pUp}`);
-  assert.ok(
-    Math.abs(above.pUp - (1 - below.pUp)) < 0.02,
-    `expected roughly symmetric cases, got ${above.pUp} vs ${1 - below.pUp}`
-  );
+test('at the start price, the tail probability is about a half either way', () => {
+  const dist = simulateCycle({ startPrice: START, sigma: SIGMA, cycleSec: 20, paths: 50_000, seed: 3 });
+  assert.ok(Math.abs(tailProbability(dist, 10, START, START) - 0.5) < 0.02);
 });
 
-test('the same distance from the barrier matters less with less time left', () => {
-  // A given gap is easier to hold onto (or harder to close) the less time
-  // there is left for volatility to erase it.
-  const early = sim({ current: 100_100, remainingSec: 280 });
-  const late = sim({ current: 100_100, remainingSec: 20 });
-  assert.ok(late.pUp > early.pUp, `expected less time to raise confidence: ${late.pUp} vs ${early.pUp}`);
+test('the tail probability falls as the move gets more extreme', () => {
+  const dist = simulateCycle({ startPrice: START, sigma: SIGMA, cycleSec: 20, paths: 50_000, seed: 5 });
+  const near = tailProbability(dist, 15, START, START * 1.001);
+  const far = tailProbability(dist, 15, START, START * 1.01);
+  assert.ok(far < near, `expected a bigger move to be less likely: ${far} vs ${near}`);
 });
 
-test('more volatility pulls a winning position back toward even', () => {
-  const calm = sim({ current: 100_050, remainingSec: 60, sigma: SIGMA / 2 });
-  const wild = sim({ current: 100_050, remainingSec: 60, sigma: SIGMA * 4 });
-  assert.ok(calm.pUp > wild.pUp);
-  assert.ok(wild.pUp > 0.5, 'still in the money, so still better than even');
-});
-
-test('a finished window is decided, not simulated', () => {
-  assert.equal(sim({ current: 100_010, remainingSec: 0 }).pUp, 1);
-  assert.equal(sim({ current: 99_990, remainingSec: 0 }).pUp, 0);
+test('the band brackets the start price and covers every second of the cycle', () => {
+  const dist = simulateCycle({ startPrice: START, sigma: SIGMA, cycleSec: 20, paths: 20_000, seed: 9 });
+  const band = bandFromDistribution(dist, 0.1);
+  assert.equal(band.length, 20);
+  for (const b of band) {
+    assert.ok(b.lo < START && START < b.hi, `second ${b.sec}: expected start price inside [${b.lo}, ${b.hi}]`);
+  }
+  // The band should widen over time — more seconds means more room to roam.
+  assert.ok(band[19].hi - band[19].lo > band[0].hi - band[0].lo);
 });
 
 test('the same seed replays exactly', () => {
-  assert.equal(sim({ seed: 99 }).pUp, sim({ seed: 99 }).pUp);
+  const a = simulateCycle({ startPrice: START, sigma: SIGMA, cycleSec: 20, paths: 1000, seed: 99 });
+  const b = simulateCycle({ startPrice: START, sigma: SIGMA, cycleSec: 20, paths: 1000, seed: 99 });
+  assert.deepEqual(Array.from(a.stepPrices[19]), Array.from(b.stepPrices[19]));
 });
 
-// ── Bars and volatility ─────────────────────────────────────────────────────
+// ── One-second series and realised volatility ───────────────────────────────
 
-test('ticks fold into aligned 15-second closes', () => {
+test('ticks fold into one price point per whole second, last tick wins', () => {
   const base = 1_800_000_000_000;
-  const bars = toBars([
-    { t: base + 1000, p: 100 },
-    { t: base + 14_000, p: 98 },
-    { t: base + 16_000, p: 101 },
+  const points = toSeconds([
+    { t: base + 100, p: 100 },
+    { t: base + 900, p: 101 },
+    { t: base + 1_400, p: 102 },
   ]);
-  assert.equal(bars.length, 2);
-  assert.equal(bars[0].c, 98, 'the last tick in the bucket is the close');
-  assert.equal(bars[1].t - bars[0].t, 15_000);
+  assert.equal(points.length, 2);
+  assert.equal(points[0].p, 101, 'the last tick within the second is the sample');
+  assert.equal(points[1].t - points[0].t, 1000);
 });
 
-test('gaps are filled flat so the series stays evenly spaced', () => {
-  const filled = fillGaps([
-    { t: 0, c: 1 },
-    { t: 60_000, c: 2 }, // a 4-bar gap at the 15s bar size
-  ]);
-  assert.equal(filled.length, 5);
-  assert.equal(filled[1].c, 1, 'a gap contributes no return');
-  assert.equal(returns(filled).filter((r) => r !== 0).length, 1);
-});
-
-test('volatility recovers a known sigma from a plain average of the last 10 returns', () => {
+test('volatility recovers a known per-second sigma', () => {
   const s = new NormalSampler(new Rng(4));
-  const sigma15s = SIGMA * Math.sqrt(15);
   let p = 100_000;
-  const bars: Bar[] = [];
-  for (let i = 0; i < 40; i++) {
-    p *= Math.exp(s.next() * sigma15s);
-    bars.push({ t: i * 15_000, c: p });
+  const points: Tick[] = [];
+  for (let i = 0; i < 61; i++) {
+    p *= Math.exp(s.next() * SIGMA);
+    points.push({ t: i * 1000, p });
   }
-  const est = volatility(bars);
-  assert.ok(Math.abs(est.sigma - SIGMA) / SIGMA < 0.5, `got ${est.sigma} vs ${SIGMA}`);
-  assert.equal(est.samples, 10, 'only the last 10 returns are used');
+  const est = volatility(points.slice(-60));
+  assert.ok(Math.abs(est.sigma - SIGMA) / SIGMA < 0.4, `got ${est.sigma} vs ${SIGMA}`);
+  assert.equal(est.samples, 59);
+});
 
+test('with no real tape, volatility falls back to a plausible generic number, never zero', () => {
   const empty = volatility([]);
-  assert.ok(empty.sigma > 0, 'never zero — that would make every edge look infinite');
+  assert.ok(empty.sigma > 0);
+  assert.equal(empty.volPct, 45);
 });
 
-test('a couple of minutes of real 15-second bars clears the fallback', () => {
-  // 11 bars gives 10 returns — the full window volatility() looks at.
-  const bars: Bar[] = Array.from({ length: 11 }, (_, i) => ({ t: i * 15_000, c: 100_000 + i * 3 }));
-  const est = volatility(bars);
-  assert.ok(est.sigma > 0);
-  // A steadily rising series with no noise has a real, tiny, non-fallback sigma.
-  assert.ok(est.volPct < 45, `expected a real estimate below the 45% fallback, got ${est.volPct}`);
-});
-
-// ── Book ────────────────────────────────────────────────────────────────────
+// ── Binance order book ──────────────────────────────────────────────────────
 
 const book = {
-  tokenId: 'x',
-  bids: [{ price: 0.48, size: 100 }],
+  bids: [{ price: 99_950, size: 0.5 }],
   asks: [
-    { price: 0.52, size: 40 },
-    { price: 0.55, size: 200 },
+    { price: 100_050, size: 0.1 },
+    { price: 100_100, size: 1 },
   ],
   t: Date.now(),
 };
 
 test('the quote is the touch', () => {
   const q = quote(book);
-  assert.equal(q.ask, 0.52);
-  assert.equal(q.bid, 0.48);
-  assert.equal(q.askSize, 40);
+  assert.equal(q.ask, 100_050);
+  assert.equal(q.bid, 99_950);
   assert.equal(quote(null).ask, null);
 });
 
-test('a paper fill walks real depth and reports shortfalls honestly', () => {
-  const f = fill(book, 100, 0.001);
-  assert.equal(f.shares, 100);
-  // 40 at 0.521, 60 at 0.551 — a tick worse than shown, for the queue race.
-  assert.ok(Math.abs(f.price - (40 * 0.521 + 60 * 0.551) / 100) < 1e-9);
-  assert.ok(f.price > 0.52, 'crossing two levels must cost more than the touch');
-
-  assert.equal(fill(book, 10_000, 0.001).shares, 240, 'cannot fill beyond the book');
-  assert.equal(fill({ ...book, asks: [] }, 10).shares, 0);
+test('opening walks the asks by USD budget and reports the average fill price', () => {
+  const usd = 100_050 * 0.1 + 100_100 * 0.05; // exhausts the first level, part of the second
+  const f = fillUsd(book, 'BUY', usd);
+  assert.ok(Math.abs(f.qty - 0.15) < 1e-9);
+  assert.ok(f.price > 100_050, 'crossing two levels must cost more than the touch');
+  assert.equal(fillUsd(null, 'BUY', 10).qty, 0);
 });
 
-// ── Chainlink on-chain fallback ─────────────────────────────────────────────
+test('closing walks the book by exact quantity, buy side for a short, sell side for a long', () => {
+  const exit = fillQty(book, 'SELL', 0.5);
+  assert.ok(Math.abs(exit.qty - 0.5) < 1e-9);
+  assert.equal(exit.price, 99_950, 'only one bid level, so the whole size fills there');
 
-/** ABI-encodes a Chainlink latestRoundData() response: 5 left-padded 32-byte words. */
-function encodeLatestRoundData(answer: bigint, updatedAtSec: bigint): string {
-  const word = (n: bigint) => (n < 0n ? n + (1n << 256n) : n).toString(16).padStart(64, '0');
-  return '0x' + word(1n) + word(answer) + word(0n) + word(updatedAtSec) + word(1n);
-}
-
-test('the on-chain read decodes a signed 8-decimal answer and the updatedAt timestamp', async () => {
-  const server = createServer((req, res) => {
-    let body = '';
-    req.on('data', (c) => (body += c));
-    req.on('end', () => {
-      const parsed = JSON.parse(body) as { method: string };
-      assert.equal(parsed.method, 'eth_call');
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ result: encodeLatestRoundData(6_543_210_000_000n, 1_800_000_000n) }));
-    });
-  });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-  const { port } = server.address() as AddressInfo;
-  try {
-    const read = await chainlink(`http://127.0.0.1:${port}`, '0xfeed');
-    assert.ok(Math.abs(read.price - 65_432.1) < 1e-6, `got ${read.price}`);
-    assert.equal(read.updatedAt, 1_800_000_000_000, 'updatedAt is unix seconds, converted to ms');
-  } finally {
-    await new Promise<void>((r) => server.close(() => r()));
-  }
-});
-
-test('a short or malformed on-chain response is rejected rather than producing a fake price', async () => {
-  const server = createServer((req, res) => {
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ result: '0x00' }));
-  });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-  const { port } = server.address() as AddressInfo;
-  try {
-    await assert.rejects(() => chainlink(`http://127.0.0.1:${port}`, '0xfeed'));
-  } finally {
-    await new Promise<void>((r) => server.close(() => r()));
-  }
-});
-
-// ── Market discovery ────────────────────────────────────────────────────────
-
-/**
- * A stand-in for Gamma's /markets?slug=... endpoint. Polymarket's BTC 5-minute
- * markets sit on a fixed grid — each opens on a UTC timestamp divisible by 300
- * and is slugged `btc-updown-5m-<window-start-seconds>` — so the current and
- * next window can be computed from the clock. This is the fix for a real bug:
- * the previous approach searched a listing by question text, which Polymarket
- * also uses for BTC "Up or Down" series at other durations (hourly, daily),
- * and documented `active=true` filtering that can drop these recurring
- * markets from that listing entirely — either way, a wrong or missing market,
- * not a clean failure.
- */
-function gammaRow(startSec: number) {
-  return {
-    id: `mkt-${startSec}`,
-    slug: `btc-updown-5m-${startSec}`,
-    question: 'Bitcoin Up or Down',
-    outcomes: '["Up","Down"]',
-    clobTokenIds: `["up-${startSec}","down-${startSec}"]`,
-    closed: false,
-    acceptingOrders: true,
-  };
-}
-
-async function withGamma(
-  known: Set<number>,
-  run: (url: string, requested: string[]) => Promise<void>
-) {
-  const requested: string[] = [];
-  const server = createServer((req, res) => {
-    const url = new URL(req.url ?? '', 'http://x');
-    const slug = url.searchParams.get('slug') ?? '';
-    requested.push(slug);
-    const m = slug.match(/^btc-updown-5m-(\d+)$/);
-    const startSec = m ? Number(m[1]) : NaN;
-    const body = known.has(startSec) ? [gammaRow(startSec)] : [];
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(body));
-  });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-  const { port } = server.address() as AddressInfo;
-  try {
-    await run(`http://127.0.0.1:${port}`, requested);
-  } finally {
-    await new Promise<void>((r) => server.close(() => r()));
-  }
-}
-
-test('discovery requests the grid-aligned slug for "now", not a search', async () => {
-  // 2024-01-01T00:07:43Z — 463s past midnight, not on a 5-minute boundary.
-  const now = Date.UTC(2024, 0, 1, 0, 7, 43);
-  const windowStart = Math.floor(now / 1000 / 300) * 300; // must floor to :05:00
-  await withGamma(new Set([windowStart, windowStart + 300]), async (url, requested) => {
-    const d = await discover(url, now);
-    assert.ok(requested.includes(`btc-updown-5m-${windowStart}`));
-    assert.ok(requested.includes(`btc-updown-5m-${windowStart + 300}`));
-    assert.equal(d.live?.slug, `btc-updown-5m-${windowStart}`);
-    assert.equal(d.live?.startMs, windowStart * 1000);
-    assert.equal(d.live?.endMs, (windowStart + 300) * 1000);
-    assert.equal(d.next?.slug, `btc-updown-5m-${windowStart + 300}`);
-  });
-});
-
-test('discovery trusts the slug for window boundaries, not the row', async () => {
-  // Even if Gamma's own date fields were missing or wrong, the slug is the
-  // one thing that cannot lie about which five minutes this market covers.
-  const now = Date.UTC(2024, 0, 1, 12, 0, 0);
-  const windowStart = Math.floor(now / 1000 / 300) * 300;
-  await withGamma(new Set([windowStart]), async (url) => {
-    const d = await discover(url, now);
-    assert.equal(d.live?.startMs, windowStart * 1000);
-    assert.equal(d.live?.endMs, windowStart * 1000 + 300_000);
-  });
-});
-
-test('a market outside its own window is reported in the right slot', async () => {
-  const now = Date.UTC(2024, 0, 1, 12, 0, 0);
-  const windowStart = Math.floor(now / 1000 / 300) * 300;
-  // Only the *next* window exists yet — the current one has not been created.
-  await withGamma(new Set([windowStart + 300]), async (url) => {
-    const d = await discover(url, now);
-    assert.equal(d.live, null);
-    assert.equal(d.next?.startMs, (windowStart + 300) * 1000);
-  });
-});
-
-test('falls back to a listing search when the grid produces nothing', async () => {
-  const now = Date.UTC(2024, 0, 1, 12, 0, 0);
-  const server = createServer((req, res) => {
-    const url = new URL(req.url ?? '', 'http://x');
-    if (url.searchParams.has('slug')) {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end('[]');
-      return;
-    }
-    // The listing fallback: one row shaped like a real 5-minute market.
-    const start = new Date(now);
-    const end = new Date(now + 300_000);
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(
-      JSON.stringify([
-        {
-          id: 'fallback-1',
-          slug: 'bitcoin-up-or-down-fallback',
-          question: 'Bitcoin Up or Down',
-          startDate: start.toISOString(),
-          endDate: end.toISOString(),
-          outcomes: '["Up","Down"]',
-          clobTokenIds: '["u1","d1"]',
-          closed: false,
-        },
-      ])
-    );
-  });
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
-  const { port } = server.address() as AddressInfo;
-  try {
-    const d = await discover(`http://127.0.0.1:${port}`, now);
-    assert.equal(d.live?.id, 'fallback-1');
-  } finally {
-    await new Promise<void>((r) => server.close(() => r()));
-  }
+  // Cannot close more than the book has.
+  const short = fillQty({ ...book, bids: [] }, 'SELL', 1);
+  assert.equal(short.qty, 0);
 });
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
 test('config is clamped on write', () => {
-  const c = sanitize({ minEdge: 5, stakeUsd: -10, paths: 10_000_000 });
-  assert.ok(c.minEdge <= 0.5);
+  const c = sanitize({ closeAtSecond: 100, stakeUsd: -10, unlikeliness: 2 });
+  assert.ok(c.closeAtSecond <= 19);
   assert.ok(c.stakeUsd >= 1);
-  assert.ok(c.paths <= 50_000);
-  assert.equal(sanitize({ mode: 'HACK' }).mode, DEFAULT_CONFIG.mode);
+  assert.ok(c.unlikeliness <= 0.4);
   assert.equal(sanitize({ autoTrade: 'yes' }).autoTrade, DEFAULT_CONFIG.autoTrade);
 });
 
-test('the defaults let a trade happen at all', () => {
+test('the defaults leave room to enter and close within one cycle', () => {
   const c = DEFAULT_CONFIG;
-  assert.ok(c.minEdge > 0 && c.minEdge < 0.5);
-  assert.ok(c.minSecondsLeft < 300, 'must leave room inside the window to enter');
+  assert.ok(c.closeAtSecond > 0 && c.closeAtSecond < 20);
+  assert.ok(c.unlikeliness > 0 && c.unlikeliness < 1);
   assert.ok(c.stakeUsd > 0);
 });

@@ -1,37 +1,26 @@
 import type { Config } from './types';
 
-/** The 5-minute window, in seconds. */
-export const WINDOW_SEC = 300;
-/** History bar size, in seconds. */
-export const BAR_SEC = 15;
-/** Rolling width of the price history the engine keeps, in minutes. */
-export const HISTORY_MIN = 30;
-/**
- * Minimum time the engine must spend gathering live ticks before it will
- * trade its first window. There is no seeded history — the tape is built
- * entirely from what has actually been observed since start() — so this is
- * the time it takes for the volatility estimate to be real rather than a
- * generic fallback number.
- */
-export const CALIBRATION_MIN_SEC = 60;
+/** The whole strategy runs on fixed 20-second slots of the wall clock — :00, :20, :40. */
+export const CYCLE_SEC = 20;
+/** How many trailing one-second price points feed the volatility estimate. */
+export const HISTORY_SEC = 60;
+/** Monte Carlo paths per cycle. Fixed, not a setting — the spec is exact about this number. */
+export const PATHS = 10_000;
+
+export const SYMBOL = 'BTCUSDT';
 
 export const DEFAULT_CONFIG: Config = {
-  mode: 'PAPER',
   autoTrade: false,
   killSwitch: false,
-  minEdge: 0.05, // 5 percentage points over the market price
+  closeAtSecond: 19,
+  unlikeliness: 0.1, // trade when the model gives the current move less than a 10% chance
   stakeUsd: 20,
-  maxDailyLossUsd: 100,
-  minSecondsLeft: 20,
-  paths: 10_000,
 };
 
 const BOUNDS = {
-  minEdge: [0.01, 0.5],
+  closeAtSecond: [1, CYCLE_SEC - 1],
+  unlikeliness: [0.01, 0.4],
   stakeUsd: [1, 10_000],
-  maxDailyLossUsd: [1, 100_000],
-  minSecondsLeft: [5, 240],
-  paths: [1000, 50_000],
 } as const;
 
 /** Clamp an untrusted patch into range. Applied on every write, server-side too. */
@@ -49,6 +38,5 @@ export function sanitize(patch: unknown, base: Config = DEFAULT_CONFIG): Config 
   for (const key of ['autoTrade', 'killSwitch'] as const) {
     if (typeof p[key] === 'boolean') out[key] = p[key] as boolean;
   }
-  if (p.mode === 'PAPER' || p.mode === 'LIVE') out.mode = p.mode;
   return out;
 }

@@ -3,49 +3,13 @@
 // trading decision, it does not belong here.
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type Mode = 'PAPER' | 'LIVE';
-export type Side = 'UP' | 'DOWN';
-
 /** One price observation. */
 export interface Tick {
   t: number; // epoch ms
   p: number; // USD
 }
 
-/** A BAR_SEC-second close. Only the close matters for what we do with it. */
-export interface Bar {
-  t: number; // bucket start, epoch ms, aligned to BAR_SEC
-  c: number;
-}
-
-// ── Market ──────────────────────────────────────────────────────────────────
-
-export interface MarketToken {
-  tokenId: string;
-  side: Side;
-}
-
-export interface Market {
-  id: string;
-  slug: string;
-  question: string;
-  startMs: number;
-  endMs: number;
-  tokens: MarketToken[];
-  minTickSize: number;
-  minOrderSize: number;
-  negRisk: boolean;
-  acceptingOrders: boolean;
-}
-
-export interface Quote {
-  bid: number | null;
-  ask: number | null;
-  askSize: number;
-}
-
 export interface Book {
-  tokenId: string;
   bids: { price: number; size: number }[];
   asks: { price: number; size: number }[];
   t: number;
@@ -53,77 +17,38 @@ export interface Book {
 
 // ── The simulation ──────────────────────────────────────────────────────────
 
-/**
- * The only model. A driftless Monte Carlo: no view is taken on direction, only
- * on how far realised volatility could plausibly carry the price in the time
- * left. Ignoring drift, there is no `pUpNeutral` control to compare against —
- * this run *is* the neutral one.
- */
-export interface Simulation {
-  /** Share of simulated paths finishing above the barrier. */
-  pUp: number;
-  /** Per-second volatility used, from the realised tape. */
-  sigma: number;
-  /** Annualised, for display. */
-  volPct: number;
-  paths: number;
-  computeMs: number;
-}
+/** Betting on reversion: LONG expects price to climb back up, SHORT to fall back down. */
+export type Direction = 'LONG' | 'SHORT';
 
-// ── Trading ─────────────────────────────────────────────────────────────────
+export type PositionStatus = 'OPEN' | 'CLOSED';
 
-export type TradeStatus = 'OPEN' | 'WON' | 'LOST' | 'FAILED';
-
-export interface Trade {
+export interface Position {
   id: string;
-  mode: Mode;
-  marketId: string;
-  marketSlug: string;
-  tokenId: string;
-  side: Side;
-  t: number;
-  price: number;
-  shares: number;
-  cost: number;
-  /** Our probability at entry. */
-  ourProb: number;
-  /** What the market was charging at entry. */
-  marketProb: number;
-  edge: number;
-  status: TradeStatus;
+  cycleId: string;
+  direction: Direction;
+  qty: number; // BTC
+  openedAt: number;
+  openPrice: number;
+  /** The tail probability that triggered this entry. */
+  triggerProb: number;
+  /** When this cycle forces the position closed, regardless of price. */
+  closesAt: number;
+  status: PositionStatus;
+  closedAt: number | null;
+  closePrice: number | null;
   pnl: number | null;
-  barrier: number;
-  settlePrice: number | null;
-  outcome: Side | null;
-  error?: string;
 }
 
-/**
- * Where a captured price came from, most trustworthy (freshest) first.
- * Always a genuine Chainlink read — the exact asset Polymarket itself
- * settles these markets on, and the only source used anywhere in this app —
- * never approximated from another exchange or index.
- */
-export type BarrierSource = 'chainlink-live' | 'chainlink-onchain';
-
-/** One completed 5-minute window, traded or not. */
-export interface WindowRecord {
+/** One completed 20-second cycle, traded or not. */
+export interface CycleRecord {
   id: string;
-  marketId: string;
-  slug: string;
   startMs: number;
   endMs: number;
-  barrier: number;
-  barrierSource: BarrierSource;
-  close: number | null;
-  closeSource: BarrierSource | null;
-  outcome: Side | null;
-  /** The simulation's final read of P(UP), for calibration tracking. */
-  finalPUp: number | null;
+  startPrice: number;
+  sigma: number;
+  volPct: number;
   traded: boolean;
   pnl: number | null;
-  /** Why we did not trade, in one phrase. */
-  skipReason: string | null;
 }
 
 export interface LogLine {
@@ -135,37 +60,24 @@ export interface LogLine {
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
-/**
- * The whole configuration. Everything here is a thing an operator would
- * actually want to change.
- */
 export interface Config {
-  mode: Mode;
   autoTrade: boolean;
   killSwitch: boolean;
-  /** Trade when our probability beats the ask by more than this. */
-  minEdge: number;
-  /** Fixed USD per trade. */
+  /** Force-close any open position at this many seconds into the cycle. */
+  closeAtSecond: number;
+  /** Flag a trade when the live price's tail probability drops below this. */
+  unlikeliness: number;
+  /** Fixed USD per position. */
   stakeUsd: number;
-  /** Stop trading for the day after losing this much. */
-  maxDailyLossUsd: number;
-  /** Do not enter with less than this on the clock. */
-  minSecondsLeft: number;
-  /** Monte Carlo paths per run. */
-  paths: number;
 }
 
 export interface Stats {
-  trades: number;
+  positions: number;
   wins: number;
   losses: number;
   open: number;
   winRate: number;
   pnl: number;
   today: number;
-  /** Windows observed. */
-  windows: number;
-  /** Brier score of the simulation's final P(UP) across observed windows. */
-  brier: number | null;
-  scored: number;
+  cycles: number;
 }

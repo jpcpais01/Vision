@@ -36,7 +36,7 @@ export function excessKurtosis(xs: number[]): number {
 }
 
 /** Linear-interpolated quantile of an already-sorted ascending array. */
-export function quantileSorted(sorted: number[], q: number): number {
+export function quantileSorted(sorted: ArrayLike<number>, q: number): number {
   const n = sorted.length;
   if (n === 0) return NaN;
   if (n === 1) return sorted[0];

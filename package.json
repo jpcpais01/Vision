@@ -1,8 +1,8 @@
 {
-  "name": "vision-btc-5m",
+  "name": "vision-btc-reversion",
   "version": "1.0.0",
   "private": true,
-  "description": "Production-ready trading system for Polymarket Bitcoin 5-minute UP/DOWN markets",
+  "description": "Paper-trading system for Bitcoin mean reversion, on Binance, against a live Monte Carlo simulation",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -12,14 +12,10 @@
     "test": "node --import tsx --test src/lib/__tests__/*.test.ts"
   },
   "dependencies": {
-    "@polymarket/clob-client": "^4.15.0",
-    "@polymarket/real-time-data-client": "^1.4.0",
-    "ethers": "^5.7.2",
     "next": "^14.2.35",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "server-only": "^0.0.1",
-    "zod": "^3.23.8"
+    "server-only": "^0.0.1"
   },
   "devDependencies": {
     "@types/node": "^22.7.5",

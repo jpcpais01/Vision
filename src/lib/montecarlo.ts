@@ -1,69 +1,125 @@
-import type { Simulation } from './types';
 import { NormalSampler, Rng } from './math/rng';
-
-const SECONDS_PER_YEAR = 365 * 24 * 3600;
+import { quantileSorted } from './math/stats';
 
 /**
  * ── The only model ───────────────────────────────────────────────────────────
  *
- * A driftless Monte Carlo. No view is taken on direction — nothing feeds one
- * in. The question answered is purely: given how much Bitcoin has actually
- * moved around in the last half hour, how far could it plausibly go in the
- * time that's left, and what share of that range still clears the barrier?
+ * A driftless Monte Carlo, run fresh at the start of every 20-second cycle: no
+ * view is taken on direction. `paths` random walks are simulated forward from
+ * the price right now, one step per second, using the realised volatility of
+ * the last `HISTORY_SEC` one-second price points. Unlike a single-horizon
+ * simulation, this keeps every path's price at *every* second of the cycle —
+ * the question isn't just "where might it end up" but "how far should it
+ * plausibly have gotten by second N", checked continuously as the cycle plays
+ * out.
  *
- * Mechanically: `paths` random walks are simulated forward from the *current*
- * price (not the barrier — the part of the window that has already happened
- * is the starting point, not something to re-simulate) for the `remainingSec`
- * left in the window, using the realised volatility of the last 30 minutes of
- * real ticks. `pUp` is the share that finish above the barrier.
- *
- * Recomputed roughly once a second for as long as a window is open, so it
- * tracks the actual path rather than a single stale read.
+ * When the live price strays further from the cycle's start than the model
+ * thinks is likely at that second, that's the signal: bet on reversion.
  */
 
-export interface SimInput {
-  /** Price when the window opened — what the market settles against. */
-  barrier: number;
-  /** Price now. */
-  current: number;
-  /** Seconds left in the window. */
-  remainingSec: number;
+export interface CycleSimInput {
+  /** Price when the cycle began. */
+  startPrice: number;
   /** Per-second volatility of log returns, from the realised tape. */
   sigma: number;
+  /** Cycle length, in seconds. */
+  cycleSec: number;
   paths: number;
   seed: number;
 }
 
-export function simulate(input: SimInput): Simulation {
+export interface CycleDistribution {
+  cycleSec: number;
+  /** stepPrices[i] = every path's simulated price at second (i+1), ascending-sorted. */
+  stepPrices: Float64Array[];
+  computeMs: number;
+}
+
+export function simulateCycle(input: CycleSimInput): CycleDistribution {
   const t0 = Date.now();
-  const { barrier, current, remainingSec, sigma, seed } = input;
+  const { startPrice, cycleSec } = input;
 
   // Even path count: every draw is simulated mirrored as well (antithetic
   // sampling), which halves the noise for free.
   const paths = Math.max(2, Math.floor(input.paths / 2) * 2);
-  const volPct = Math.max(sigma, 0) * Math.sqrt(SECONDS_PER_YEAR) * 100;
+  const sigma = Math.max(input.sigma, 1e-12);
 
-  if (remainingSec <= 0 || !(barrier > 0) || !(current > 0)) {
-    const settled = current > barrier ? 1 : 0;
-    return { pUp: settled, sigma, volPct, paths: 0, computeMs: Date.now() - t0 };
-  }
-
-  const s = Math.max(sigma, 1e-12);
-  const sd = s * Math.sqrt(remainingSec);
-
-  // Distance from here to the barrier, in log terms. Positive means the
-  // current price is below the barrier and needs a rally; negative means it
-  // is already above it.
-  const gap = Math.log(barrier / current);
-
-  const sampler = new NormalSampler(new Rng(seed));
-  let wins = 0;
+  const stepPrices: Float64Array[] = Array.from({ length: cycleSec }, () => new Float64Array(paths));
+  const sampler = new NormalSampler(new Rng(input.seed));
 
   for (let i = 0; i < paths; i += 2) {
-    const shock = sd * sampler.next();
-    if (shock > gap) wins++;
-    if (-shock > gap) wins++;
+    let logUp = 0;
+    let logDown = 0;
+    for (let sec = 0; sec < cycleSec; sec++) {
+      const shock = sigma * sampler.next();
+      logUp += shock;
+      logDown -= shock;
+      stepPrices[sec][i] = startPrice * Math.exp(logUp);
+      stepPrices[sec][i + 1] = startPrice * Math.exp(logDown);
+    }
   }
+  for (const arr of stepPrices) arr.sort();
 
-  return { pUp: wins / paths, sigma: s, volPct, paths, computeMs: Date.now() - t0 };
+  return { cycleSec, stepPrices, computeMs: Date.now() - t0 };
+}
+
+/**
+ * One-sided tail probability: the share of simulated paths that reached at
+ * least as far from the start price, in the same direction, as the live
+ * price has — at the given elapsed second. Falls as the move gets more
+ * extreme; a low value means the current price is a rare draw from the
+ * model's own distribution at this point in the cycle.
+ */
+export function tailProbability(
+  dist: CycleDistribution,
+  elapsedSec: number,
+  startPrice: number,
+  livePrice: number
+): number {
+  const idx = Math.min(dist.cycleSec, Math.max(1, Math.round(elapsedSec))) - 1;
+  const sorted = dist.stepPrices[idx];
+  const n = sorted.length;
+  if (n === 0) return 1;
+  return livePrice >= startPrice
+    ? (n - lowerBound(sorted, livePrice)) / n
+    : upperBound(sorted, livePrice) / n;
+}
+
+/** First index whose value is >= v. */
+function lowerBound(sorted: Float64Array, v: number): number {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (sorted[mid] < v) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** First index whose value is > v. */
+function upperBound(sorted: Float64Array, v: number): number {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (sorted[mid] <= v) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+export interface Band {
+  sec: number;
+  lo: number;
+  hi: number;
+}
+
+/** The [q, 1-q] price band at every second of the cycle — what the chart shades. */
+export function bandFromDistribution(dist: CycleDistribution, q: number): Band[] {
+  return dist.stepPrices.map((sorted, i) => ({
+    sec: i + 1,
+    lo: quantileSorted(sorted, q),
+    hi: quantileSorted(sorted, 1 - q),
+  }));
 }
