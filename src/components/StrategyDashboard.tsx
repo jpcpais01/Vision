@@ -77,14 +77,18 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
             />
 
             {/* HUD overlays — game-style corner readouts on the screen itself */}
-            <div className="pointer-events-none absolute left-3 top-2.5">
-              <div className="text-[9px] font-semibold uppercase tracking-wider text-[#7c8aa0]">Bitcoin</div>
-              <div className="num text-base font-bold text-[#eaf1fb] sm:text-lg">{s.price ? usd(s.price) : '—'}</div>
-              {distance !== null ? (
-                <div className={cx('num text-[11px] font-semibold', distance >= 0 ? 'text-[#35e08a]' : 'text-[#ff5d7a]')}>
-                  {distance >= 0 ? '+' : '−'}${Math.abs(distance).toFixed(2)}
-                </div>
-              ) : null}
+            <div className="pointer-events-none absolute left-3 top-2.5 flex flex-col items-start gap-2">
+              <div>
+                <div className="text-[9px] font-semibold uppercase tracking-wider text-[#7c8aa0]">Bitcoin</div>
+                <div className="num text-base font-bold text-[#eaf1fb] sm:text-lg">{s.price ? usd(s.price) : '—'}</div>
+                {distance !== null ? (
+                  <div className={cx('num text-[11px] font-semibold', distance >= 0 ? 'text-[#35e08a]' : 'text-[#ff5d7a]')}>
+                    {distance >= 0 ? '+' : '−'}${Math.abs(distance).toFixed(2)}
+                  </div>
+                ) : null}
+              </div>
+
+              {s.position ? <PositionHud position={s.position} price={s.price} busy={s.busy} /> : null}
             </div>
 
             <div className="pointer-events-none absolute right-3 top-2.5 text-right">
@@ -108,8 +112,6 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
                     : (s.skipReason ?? 'watching')}
               </div>
             </div>
-
-            {s.position ? <PositionHud position={s.position} price={s.price} busy={s.busy} /> : null}
           </>
         ) : (
           <StartPrompt strategyBlurb={def.blurb} />
@@ -160,20 +162,18 @@ function PositionHud({ position, price, busy }: { position: Position; price: num
 
   return (
     <div
-      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded-xl border-2 px-4 py-2.5 text-right backdrop-blur-sm"
+      className="rounded-xl border-2 px-3 py-2 backdrop-blur-sm"
       style={{
         borderColor: tone,
-        background: 'rgba(5, 7, 10, 0.55)',
+        background: 'rgba(5, 7, 10, 0.7)',
         boxShadow: `0 0 20px ${tone}66`,
       }}
     >
-      <div className="flex items-center justify-end gap-1.5">
-        <span className="text-[9px] font-semibold uppercase tracking-wider text-[#7c8aa0]">
-          {position.direction}
-          {position.leverage > 1 ? ` ${position.leverage}x` : ''}
-        </span>
-      </div>
-      <div className="num text-[32px] font-bold leading-none sm:text-[40px]" style={{ color: tone }}>
+      <span className="text-[9px] font-semibold uppercase tracking-wider text-[#7c8aa0]">
+        {position.direction}
+        {position.leverage > 1 ? ` ${position.leverage}x` : ''}
+      </span>
+      <div className="num text-2xl font-bold leading-none sm:text-[28px]" style={{ color: tone }}>
         {unrealized !== null ? signed(unrealized) : '—'}
       </div>
       <div className="mt-1 text-[10px] text-[#7c8aa0]">
