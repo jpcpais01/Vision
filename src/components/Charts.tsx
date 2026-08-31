@@ -36,7 +36,7 @@ export function CycleChart({
   position: PositionMark | null;
 }) {
   const W = 800;
-  const H = 220;
+  const H = 340;
   const pad = { t: 12, r: 8, b: 10, l: 8 };
 
   const pts = useMemo(() => (cycleStart != null ? ticks.filter((k) => k.t >= cycleStart) : []), [ticks, cycleStart]);

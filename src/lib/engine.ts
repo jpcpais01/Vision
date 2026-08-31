@@ -168,7 +168,7 @@ export class Engine {
 
     this.timers.push(setInterval(() => this.emit(), 1000)); // ticks the countdown; prices also arrive via ingestTick
     this.timers.push(setInterval(() => this.step(), 250));
-    this.timers.push(setInterval(() => void this.pollRestPrice(), 3000));
+    this.timers.push(setInterval(() => void this.pollRestPrice(), 1000));
     this.timers.push(setInterval(() => void this.flush(), 5000));
     this.emit();
   }

@@ -3,11 +3,12 @@
 import { useEffect, useState } from 'react';
 import { useBot } from '@/hooks/useBot';
 import { useEngineContext } from '@/components/EngineProvider';
-import { CYCLE_SEC, HISTORY_SEC } from '@/lib/config';
+import { CYCLE_SEC, HISTORY_SEC, PATHS } from '@/lib/config';
 import { strategyDef } from '@/lib/strategies';
 import { CycleChart } from '@/components/Charts';
 import { Settings } from '@/components/Settings';
 import { clock, cx, pct, signed, time, usd } from '@/lib/format';
+import type { Busy } from '@/lib/engine';
 import type { Position, StrategyId } from '@/lib/types';
 
 export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
@@ -88,7 +89,7 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
         ) : null}
 
         {s.running ? (
-          <div className="mt-4">
+          <div className="mt-5">
             <CycleChart
               ticks={s.ticks}
               cycleStart={s.cycleStart}
@@ -101,12 +102,15 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
         ) : (
           <p className="mt-4 border-t border-[var(--line)] pt-4 text-sm leading-relaxed text-[var(--muted)]">
             Press <strong className="text-[var(--text)]">Start</strong> and every {CYCLE_SEC} seconds it takes the
-            live Binance price as a fresh reference, simulates 10,000 random paths forward from it using the
-            realised volatility of the last {HISTORY_SEC} one-second prices, and watches whether the actual price
-            strays further than the simulation thinks is likely. {def.blurb}
+            live Binance price as a fresh reference, simulates random paths forward from it using the realised
+            volatility of the last {HISTORY_SEC} one-second prices, and watches whether the actual price strays
+            further than the simulation thinks is likely. {def.blurb}
           </p>
         )}
       </section>
+
+      {/* ── The open position — the single most important thing on screen while it's on ── */}
+      {s.position ? <PositionCard position={s.position} price={s.price} busy={s.busy} /> : null}
 
       {/* ── The read ────────────────────────────────────────── */}
       {s.running ? (
@@ -118,28 +122,13 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
             </span>
           </div>
 
-          <div className="mt-3 grid grid-cols-2 gap-3">
-            <div className="rounded-lg border border-[var(--line)] p-3">
-              <div className="label">Current probability</div>
-              <div
-                className={cx(
-                  'num mt-1 text-2xl font-bold',
-                  signalNow ? 'text-[var(--down)]' : 'text-[var(--text)]'
-                )}
-              >
-                {s.tailProb !== null ? pct(s.tailProb, 1) : '—'}
-              </div>
-              <div className="mt-0.5 text-xs text-[var(--muted)]">
-                triggers a trade below {pct(config.unlikeliness, 0)}
-              </div>
+          <div className="mt-3 rounded-lg border border-[var(--line)] p-3">
+            <div className="label">Current probability</div>
+            <div className={cx('num mt-1 text-2xl font-bold', signalNow ? 'text-[var(--down)]' : 'text-[var(--text)]')}>
+              {s.tailProb !== null ? pct(s.tailProb, 1) : '—'}
             </div>
-            <div className="rounded-lg border border-[var(--line)] p-3">
-              <div className="label">{s.position ? 'Open position' : 'Position'}</div>
-              {s.position ? (
-                <PositionRead position={s.position} price={s.price} />
-              ) : (
-                <div className="num mt-1 text-2xl font-bold text-[var(--muted)]">none</div>
-              )}
+            <div className="mt-0.5 text-xs text-[var(--muted)]">
+              triggers a trade below {pct(config.unlikeliness, 0)}
             </div>
           </div>
 
@@ -253,9 +242,9 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
       </section>
 
       <p className="px-1 text-center text-xs leading-relaxed text-[var(--muted)]">
-        Every {CYCLE_SEC} seconds, a fresh driftless Monte Carlo simulates 10,000 paths from the live Binance price,
-        shared by every bot. {def.blurb} Paper trading only, fills walked against Binance's real order book. Not
-        financial advice.
+        Every {CYCLE_SEC} seconds, a fresh driftless Monte Carlo simulates {PATHS.toLocaleString()} paths from the
+        live Binance price, shared by every bot. {def.blurb} Paper trading only, fills walked against Binance's
+        real order book. Not financial advice.
       </p>
 
       {showSettings ? (
@@ -272,28 +261,54 @@ export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
   );
 }
 
-function PositionRead({ position, price }: { position: Position; price: number | null }) {
+/** The single most important thing on screen while a position is open: live profit or loss, large. */
+function PositionCard({ position, price, busy }: { position: Position; price: number | null; busy: Busy }) {
   const unrealized =
     price !== null
       ? position.direction === 'LONG'
         ? (price - position.openPrice) * position.qty
         : (position.openPrice - price) * position.qty
       : null;
+  const openSeconds = Math.max(0, Math.round((Date.now() - position.openedAt) / 1000));
+  const winning = unrealized !== null && unrealized >= 0;
+  const tone = unrealized === null ? 'text-[var(--muted)]' : winning ? 'text-[var(--up)]' : 'text-[var(--down)]';
+
   return (
-    <>
-      <div
-        className={cx(
-          'num mt-1 text-2xl font-bold',
-          position.direction === 'LONG' ? 'text-[var(--up)]' : 'text-[var(--down)]'
-        )}
-      >
-        {position.direction}
+    <section
+      className={cx(
+        'card border-2 p-5',
+        unrealized === null ? 'border-[var(--line)]' : winning ? 'border-[var(--up)]' : 'border-[var(--down)]'
+      )}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="label">Open position</div>
+          <div
+            className={cx(
+              'num mt-0.5 text-xl font-bold',
+              position.direction === 'LONG' ? 'text-[var(--up)]' : 'text-[var(--down)]'
+            )}
+          >
+            {position.direction}
+          </div>
+          <div className="num mt-1 text-xs text-[var(--muted)]">
+            {position.qty.toFixed(5)} BTC at {usd(position.openPrice)}
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="label">Profit / loss</div>
+          <div className={cx('num mt-0.5 text-[42px] font-bold leading-none', tone)}>
+            {unrealized !== null ? signed(unrealized) : '—'}
+          </div>
+        </div>
       </div>
-      <div className="mt-0.5 text-xs text-[var(--muted)]">
-        {position.qty.toFixed(5)} BTC at {usd(position.openPrice)}
-        {unrealized !== null ? ` · ${signed(unrealized)} unrealised` : ''}
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-[var(--line)] pt-3 text-xs text-[var(--muted)]">
+        <span>open {clock(openSeconds)}</span>
+        <span>·</span>
+        <span>triggered at {pct(position.triggerProb, 1)}</span>
+        {busy === 'closing' ? <Chip tone="muted">Closing…</Chip> : null}
       </div>
-    </>
+    </section>
   );
 }
 

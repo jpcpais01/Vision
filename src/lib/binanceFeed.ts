@@ -21,10 +21,19 @@ import { FUTURES_WS, SYMBOL } from './config';
  * different clock (server time, which can drift from local time, or simply
  * lag behind if this device's JS thread was briefly busy) would silently
  * filter fresh ticks out of the current cycle until local time caught up.
+ *
+ * A WebSocket can go quiet without ever firing `onclose` — the TCP
+ * connection looks fine at the browser level, Binance's server just stops
+ * sending, which happens for real on flaky mobile networks. Without a
+ * watchdog that goes unnoticed, and every price update silently falls back
+ * to the much slower REST poll instead. `STALL_MS` below forces a reconnect
+ * whenever a highly liquid pair like BTCUSDT has gone suspiciously quiet.
  */
 
 const URL = `${FUTURES_WS}/ws/${SYMBOL.toLowerCase()}@aggTrade`;
 const BACKOFF_MS = [1000, 2000, 5000, 10000, 20000];
+const STALL_MS = 6000;
+const WATCHDOG_INTERVAL_MS = 2000;
 
 interface AggTradeEvent {
   e?: string;
@@ -39,10 +48,12 @@ export interface BinanceFeedOptions {
 export class BinanceFeed {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
   private attempt = 0;
   private running = false;
   private connected = false;
   private lastTick: Tick | null = null;
+  private connectedAt = 0;
 
   constructor(private opts: BinanceFeedOptions) {}
 
@@ -72,6 +83,8 @@ export class BinanceFeed {
   private teardown(): void {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    this.watchdogTimer = null;
     if (this.ws) {
       this.ws.onopen = null;
       this.ws.onmessage = null;
@@ -96,7 +109,9 @@ export class BinanceFeed {
 
       ws.onopen = () => {
         this.attempt = 0;
+        this.connectedAt = Date.now();
         this.setConnected(true);
+        this.watchdogTimer = setInterval(() => this.checkStall(), WATCHDOG_INTERVAL_MS);
       };
 
       ws.onmessage = (event) => {
@@ -128,6 +143,13 @@ export class BinanceFeed {
       this.setConnected(false);
       if (this.running) this.reconnect();
     }
+  }
+
+  /** Forces a fresh connection when the socket has gone quiet without ever closing. */
+  private checkStall(): void {
+    if (!this.running) return;
+    const sinceLastTick = this.lastTick ? Date.now() - this.lastTick.t : Date.now() - this.connectedAt;
+    if (sinceLastTick > STALL_MS) this.connect();
   }
 
   private reconnect(): void {
