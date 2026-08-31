@@ -63,7 +63,22 @@ export function CycleChart({
   const H = h || 1;
   const pad = { t: 18, r: 10, b: 14, l: 10 };
 
-  const pts = useMemo(() => (cycleStart != null ? ticks.filter((k) => k.t >= cycleStart) : []), [ticks, cycleStart]);
+  // Real trades can arrive sparsely — this just re-renders every 100ms so the
+  // line keeps advancing at the last known price in between, instead of
+  // sitting dead flat until the next trade actually lands.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(id);
+  }, []);
+
+  const pts = useMemo(() => {
+    if (cycleStart == null) return [];
+    const real = ticks.filter((k) => k.t >= cycleStart);
+    const last = real[real.length - 1];
+    if (last && now - last.t > 50) return [...real, { t: now, p: last.p }];
+    return real;
+  }, [ticks, cycleStart, now]);
 
   const ready = band && cycleStart !== null && cycleStartPrice !== null && pts.length >= 2 && w > 0 && h > 0;
 
@@ -90,7 +105,7 @@ export function CycleChart({
   const bandHiPath = band.map((b, i) => `${i ? 'L' : 'M'} ${xSec(b.sec).toFixed(1)} ${y(b.hi).toFixed(1)}`).join(' ');
   const bandLoPath = band.map((b, i) => `${i ? 'L' : 'M'} ${xSec(b.sec).toFixed(1)} ${y(b.lo).toFixed(1)}`).join(' ');
 
-  const line = pts.map((p, i) => `${i ? 'L' : 'M'} ${x(p.t).toFixed(1)} ${y(p.p).toFixed(1)}`).join(' ');
+  const line = smoothPath(pts.map((p) => ({ x: x(p.t), y: y(p.p) })));
   const last = pts[pts.length - 1];
   const above = last.p > cycleStartPrice;
   const tone = above ? UP : DOWN;
@@ -166,7 +181,7 @@ export function CycleChart({
           strokeDasharray="3 4"
         />
 
-        <path d={line} fill="none" stroke={tone} strokeWidth="4" strokeLinejoin="round" strokeLinecap="round" filter="url(#glow)" />
+        <path d={line} fill="none" stroke={tone} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" filter="url(#glow)" />
 
         {position ? (
           <>
@@ -184,12 +199,28 @@ export function CycleChart({
           </>
         ) : null}
 
-        {/* the live marker — a soft pulsing halo behind a solid dot */}
-        <circle cx={x(last.t)} cy={y(last.p)} r="20" fill={tone} opacity="0.25" className="animate-pulse" />
-        <circle cx={x(last.t)} cy={y(last.p)} r="8" fill={tone} filter="url(#glow)" />
+        {/* the live marker — a soft pulsing halo behind a small solid dot */}
+        <circle cx={x(last.t)} cy={y(last.p)} r="12" fill={tone} opacity="0.25" className="animate-pulse" />
+        <circle cx={x(last.t)} cy={y(last.p)} r="4" fill={tone} filter="url(#glow)" />
       </svg>
     </div>
   );
+}
+
+/** Quadratic-through-midpoints smoothing — cheap, no library, and enough to
+ *  turn a jagged tick-by-tick polyline into one continuous curve. */
+function smoothPath(pts: { x: number; y: number }[]): string {
+  if (pts.length < 2) return '';
+  if (pts.length === 2) return `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)} L ${pts[1].x.toFixed(1)} ${pts[1].y.toFixed(1)}`;
+  let d = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const midX = (pts[i].x + pts[i + 1].x) / 2;
+    const midY = (pts[i].y + pts[i + 1].y) / 2;
+    d += ` Q ${pts[i].x.toFixed(1)} ${pts[i].y.toFixed(1)} ${midX.toFixed(1)} ${midY.toFixed(1)}`;
+  }
+  const last = pts[pts.length - 1];
+  d += ` L ${last.x.toFixed(1)} ${last.y.toFixed(1)}`;
+  return d;
 }
 
 function Placeholder({ children }: { children: React.ReactNode }) {

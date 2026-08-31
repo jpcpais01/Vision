@@ -165,7 +165,7 @@ Per bot, seven things, all on sliders or a toggle:
 - **Trade automatically** — on by default; off means this bot watches and
   logs, but never buys
 - **Flag when probability drops below** — how unlikely the current move has
-  to be, versus the simulation, before it's a signal (default 10%)
+  to be, versus the simulation, before it's a signal (default 20%)
 - **Close trades at second** — force-close whatever's open this many seconds
   into the 60-second cycle (default 50, and capped there — see below)
 - **Stake per trade** — fixed USD margin per position, $10 to $10,000
