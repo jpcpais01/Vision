@@ -63,15 +63,19 @@ export function errorMessage(err: unknown): string {
   return String(err);
 }
 
-/** Wrap a handler with auth + uniform error reporting. */
-export function handler(
-  fn: (req: Request) => Promise<NextResponse>
-): (req: Request) => Promise<NextResponse> {
-  return async (req: Request) => {
+/**
+ * Wrap a handler with auth + uniform error reporting. Generic over any extra
+ * arguments Next.js passes a route — a dynamic segment's `{ params }`, most
+ * often — so a route(s) needing one is not a special case.
+ */
+export function handler<Args extends unknown[] = []>(
+  fn: (req: Request, ...args: Args) => Promise<NextResponse>
+): (req: Request, ...args: Args) => Promise<NextResponse> {
+  return async (req: Request, ...args: Args) => {
     const auth = checkAuth(req);
     if (!auth.ok) return auth.response;
     try {
-      return await fn(req);
+      return await fn(req, ...args);
     } catch (err) {
       return fail(errorMessage(err), 500);
     }

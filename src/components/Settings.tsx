@@ -2,18 +2,20 @@
 
 import { useEffect } from 'react';
 import type { Config } from '@/lib/types';
-import type { Health } from '@/hooks/useEngine';
+import type { Health } from '@/components/EngineProvider';
 import { CYCLE_SEC } from '@/lib/config';
 import { cx } from '@/lib/format';
 
 /** Four things. If a knob has no clear reason to be turned, it is not here. */
 export function Settings({
+  strategyName,
   config,
   health,
   onChange,
   onReset,
   onClose,
 }: {
+  strategyName: string;
   config: Config;
   health: Health | null;
   onChange: (patch: Partial<Config>) => void;
@@ -36,7 +38,7 @@ export function Settings({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 flex items-center justify-between border-b border-[var(--line)] bg-[var(--card)] px-5 py-3.5">
-          <h2 className="text-sm font-semibold">Settings</h2>
+          <h2 className="text-sm font-semibold">{strategyName} settings</h2>
           <button className="btn" onClick={onClose}>
             Done
           </button>
@@ -47,7 +49,7 @@ export function Settings({
             <span>
               <span className="block text-sm font-medium">Trade automatically</span>
               <span className="block text-[11px] text-[var(--muted)]">
-                Off means it watches and tells you, but never buys.
+                Off means this bot watches and logs, but never buys.
               </span>
             </span>
             <button
@@ -107,10 +109,10 @@ export function Settings({
             <button
               className="btn btn-danger w-full justify-center py-2"
               onClick={() => {
-                if (confirm('Delete all positions and history? This cannot be undone.')) onReset();
+                if (confirm(`Delete all of ${strategyName}'s positions and history? This cannot be undone.`)) onReset();
               }}
             >
-              Clear all history
+              Clear {strategyName}'s history
             </button>
             {health ? (
               <p className="mt-3 text-[11px] leading-relaxed text-[var(--muted)]">

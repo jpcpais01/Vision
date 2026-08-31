@@ -6,6 +6,7 @@ import { NormalSampler, Rng } from '../math/rng';
 import { toSeconds, volatility } from '../series';
 import { fillQty, fillUsd, quote } from '../binanceBook';
 import { DEFAULT_CONFIG, sanitize } from '../config';
+import { directionFor } from '../strategies';
 import type { Tick } from '../types';
 
 // ── Maths ───────────────────────────────────────────────────────────────────
@@ -176,4 +177,13 @@ test('the defaults leave room to enter and close within one cycle', () => {
   assert.ok(c.closeAtSecond > 0 && c.closeAtSecond < 20);
   assert.ok(c.unlikeliness > 0 && c.unlikeliness < 1);
   assert.ok(c.stakeUsd > 0);
+});
+
+// ── Strategies ───────────────────────────────────────────────────────────────
+
+test('reversion and momentum take opposite sides of the same unlikely move', () => {
+  assert.equal(directionFor('reversion', true), 'SHORT', 'a spike above start: reversion sells');
+  assert.equal(directionFor('reversion', false), 'LONG', 'a dip below start: reversion buys');
+  assert.equal(directionFor('momentum', true), 'LONG', 'a spike above start: momentum buys, expecting more');
+  assert.equal(directionFor('momentum', false), 'SHORT', 'a dip below start: momentum sells, expecting more');
 });

@@ -15,15 +15,21 @@ export interface Book {
   t: number;
 }
 
+// ── Strategies ───────────────────────────────────────────────────────────────
+
+/** Each strategy runs as its own independent bot: own config, own positions, own P&L. */
+export type StrategyId = 'reversion' | 'momentum';
+
 // ── The simulation ──────────────────────────────────────────────────────────
 
-/** Betting on reversion: LONG expects price to climb back up, SHORT to fall back down. */
+/** LONG expects price to climb, SHORT expects it to fall. */
 export type Direction = 'LONG' | 'SHORT';
 
 export type PositionStatus = 'OPEN' | 'CLOSED';
 
 export interface Position {
   id: string;
+  strategyId: StrategyId;
   cycleId: string;
   direction: Direction;
   qty: number; // BTC
@@ -42,6 +48,7 @@ export interface Position {
 /** One completed 20-second cycle, traded or not. */
 export interface CycleRecord {
   id: string;
+  strategyId: StrategyId;
   startMs: number;
   endMs: number;
   startPrice: number;

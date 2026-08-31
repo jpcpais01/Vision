@@ -1,7 +1,6 @@
-import App from '@/components/App';
-
-export const dynamic = 'force-dynamic';
+import { redirect } from 'next/navigation';
+import { DEFAULT_STRATEGY } from '@/lib/strategies';
 
 export default function Page() {
-  return <App />;
+  redirect(`/${DEFAULT_STRATEGY}`);
 }

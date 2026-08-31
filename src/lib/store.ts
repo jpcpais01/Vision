@@ -1,10 +1,12 @@
 import 'server-only';
-import type { Config, CycleRecord, Position } from './types';
+import type { Config, CycleRecord, Position, StrategyId } from './types';
 import { DEFAULT_CONFIG } from './config';
 import { env } from './env';
 
 /**
- * Server-side persistence.
+ * Server-side persistence, one independent slice per strategy — each bot's
+ * config and history lives under its own keys, entirely separate from every
+ * other bot's.
  *
  * Vercel functions are stateless and short-lived, so in-memory state survives
  * only until the next cold start. That is fine for a demo and useless for a
@@ -13,9 +15,9 @@ import { env } from './env';
  * (durable, works from any runtime, no TCP connection to pool).
  *
  * The client is the source of truth for *live* state — it holds the tick
- * feed and drives the cycle — and posts completed records here. That split
- * keeps the hot loop off the serverless billing meter while still giving a
- * durable audit trail of every decision.
+ * feed and drives the cycle for every bot — and posts completed records
+ * here. That split keeps the hot loop off the serverless billing meter while
+ * still giving a durable audit trail of every decision.
  */
 
 const MAX_ROWS = 1000;
@@ -24,47 +26,46 @@ export interface Store {
   readonly kind: 'memory' | 'upstash';
   /** Round-trip probe. Configured is not the same as reachable. */
   ping(): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
-  getConfig(): Promise<Config>;
-  setConfig(config: Config): Promise<void>;
-  getKillSwitch(): Promise<boolean>;
-  setKillSwitch(on: boolean): Promise<void>;
-  listPositions(): Promise<Position[]>;
-  upsertPosition(p: Position): Promise<void>;
-  listCycles(): Promise<CycleRecord[]>;
-  upsertCycle(c: CycleRecord): Promise<void>;
-  reset(): Promise<void>;
+  getConfig(strategyId: StrategyId): Promise<Config>;
+  setConfig(strategyId: StrategyId, config: Config): Promise<void>;
+  listPositions(strategyId: StrategyId): Promise<Position[]>;
+  upsertPosition(strategyId: StrategyId, p: Position): Promise<void>;
+  listCycles(strategyId: StrategyId): Promise<CycleRecord[]>;
+  upsertCycle(strategyId: StrategyId, c: CycleRecord): Promise<void>;
+  reset(strategyId: StrategyId): Promise<void>;
 }
 
-const KEYS = {
-  config: 'vision:config',
-  kill: 'vision:killswitch',
-  positions: 'vision:positions',
-  cycles: 'vision:cycles',
-};
+const keysFor = (id: StrategyId) => ({
+  config: `vision:config:${id}`,
+  positions: `vision:positions:${id}`,
+  cycles: `vision:cycles:${id}`,
+});
 
 // ── Memory implementation ───────────────────────────────────────────────────
 
-interface MemoryState {
+interface StrategyState {
   config: Config;
-  kill: boolean;
   positions: Map<string, Position>;
   cycles: Map<string, CycleRecord>;
 }
 
 // Hung off globalThis so it survives Next.js module reloads in dev, which would
 // otherwise wipe the session on every file save.
-const g = globalThis as unknown as { __visionStore?: MemoryState };
+const g = globalThis as unknown as { __visionStore?: Map<StrategyId, StrategyState> };
 
-function memoryState(): MemoryState {
-  if (!g.__visionStore) {
-    g.__visionStore = {
-      config: { ...DEFAULT_CONFIG },
-      kill: false,
-      positions: new Map(),
-      cycles: new Map(),
-    };
-  }
+function memoryState(): Map<StrategyId, StrategyState> {
+  if (!g.__visionStore) g.__visionStore = new Map();
   return g.__visionStore;
+}
+
+function strategyState(id: StrategyId): StrategyState {
+  const store = memoryState();
+  let s = store.get(id);
+  if (!s) {
+    s = { config: { ...DEFAULT_CONFIG }, positions: new Map(), cycles: new Map() };
+    store.set(id, s);
+  }
+  return s;
 }
 
 class MemoryStore implements Store {
@@ -73,34 +74,28 @@ class MemoryStore implements Store {
   async ping() {
     return { ok: true, latencyMs: 0 };
   }
-  async getConfig() {
-    return { ...memoryState().config };
+  async getConfig(id: StrategyId) {
+    return { ...strategyState(id).config };
   }
-  async setConfig(config: Config) {
-    memoryState().config = { ...config };
+  async setConfig(id: StrategyId, config: Config) {
+    strategyState(id).config = { ...config };
   }
-  async getKillSwitch() {
-    return memoryState().kill;
+  async listPositions(id: StrategyId) {
+    return [...strategyState(id).positions.values()].sort((a, b) => a.openedAt - b.openedAt).slice(-MAX_ROWS);
   }
-  async setKillSwitch(on: boolean) {
-    memoryState().kill = on;
+  async upsertPosition(id: StrategyId, p: Position) {
+    strategyState(id).positions.set(p.id, p);
   }
-  async listPositions() {
-    return [...memoryState().positions.values()].sort((a, b) => a.openedAt - b.openedAt).slice(-MAX_ROWS);
+  async listCycles(id: StrategyId) {
+    return [...strategyState(id).cycles.values()].sort((a, b) => a.startMs - b.startMs).slice(-MAX_ROWS);
   }
-  async upsertPosition(p: Position) {
-    memoryState().positions.set(p.id, p);
+  async upsertCycle(id: StrategyId, c: CycleRecord) {
+    strategyState(id).cycles.set(c.id, c);
   }
-  async listCycles() {
-    return [...memoryState().cycles.values()].sort((a, b) => a.startMs - b.startMs).slice(-MAX_ROWS);
-  }
-  async upsertCycle(c: CycleRecord) {
-    memoryState().cycles.set(c.id, c);
-  }
-  async reset() {
-    const st = memoryState();
-    st.positions.clear();
-    st.cycles.clear();
+  async reset(id: StrategyId) {
+    const s = strategyState(id);
+    s.positions.clear();
+    s.cycles.clear();
   }
 }
 
@@ -156,35 +151,29 @@ class UpstashStore implements Store {
     }
   }
 
-  async getConfig() {
-    return this.getJson<Config>(KEYS.config, { ...DEFAULT_CONFIG });
+  async getConfig(id: StrategyId) {
+    return this.getJson<Config>(keysFor(id).config, { ...DEFAULT_CONFIG });
   }
-  async setConfig(config: Config) {
-    await this.command(['SET', KEYS.config, JSON.stringify(config)]);
+  async setConfig(id: StrategyId, config: Config) {
+    await this.command(['SET', keysFor(id).config, JSON.stringify(config)]);
   }
-  async getKillSwitch() {
-    const v = await this.command<string | null>(['GET', KEYS.kill]);
-    return v === '1' || v === 'true';
-  }
-  async setKillSwitch(on: boolean) {
-    await this.command(['SET', KEYS.kill, on ? '1' : '0']);
-  }
-  async listPositions() {
-    const rows = await this.command<Record<string, string>>(['HGETALL', KEYS.positions]);
+  async listPositions(id: StrategyId) {
+    const rows = await this.command<Record<string, string>>(['HGETALL', keysFor(id).positions]);
     return parseHash<Position>(rows).sort((a, b) => a.openedAt - b.openedAt).slice(-MAX_ROWS);
   }
-  async upsertPosition(p: Position) {
-    await this.command(['HSET', KEYS.positions, p.id, JSON.stringify(p)]);
+  async upsertPosition(id: StrategyId, p: Position) {
+    await this.command(['HSET', keysFor(id).positions, p.id, JSON.stringify(p)]);
   }
-  async listCycles() {
-    const rows = await this.command<Record<string, string>>(['HGETALL', KEYS.cycles]);
+  async listCycles(id: StrategyId) {
+    const rows = await this.command<Record<string, string>>(['HGETALL', keysFor(id).cycles]);
     return parseHash<CycleRecord>(rows).sort((a, b) => a.startMs - b.startMs).slice(-MAX_ROWS);
   }
-  async upsertCycle(c: CycleRecord) {
-    await this.command(['HSET', KEYS.cycles, c.id, JSON.stringify(c)]);
+  async upsertCycle(id: StrategyId, c: CycleRecord) {
+    await this.command(['HSET', keysFor(id).cycles, c.id, JSON.stringify(c)]);
   }
-  async reset() {
-    await this.command(['DEL', KEYS.positions, KEYS.cycles]);
+  async reset(id: StrategyId) {
+    const k = keysFor(id);
+    await this.command(['DEL', k.positions, k.cycles]);
   }
 }
 

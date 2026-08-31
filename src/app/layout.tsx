@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import Script from 'next/script';
+import { EngineProvider } from '@/components/EngineProvider';
+import { AppShell } from '@/components/AppShell';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -35,7 +37,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body className="min-h-screen">
-        {children}
+        <EngineProvider>
+          <AppShell>{children}</AppShell>
+        </EngineProvider>
         <Script id="sw-register" strategy="afterInteractive">
           {`if ('serviceWorker' in navigator) { window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {})); }`}
         </Script>

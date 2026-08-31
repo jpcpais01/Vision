@@ -1,16 +1,20 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useEngine } from '@/hooks/useEngine';
+import { useBot } from '@/hooks/useBot';
+import { useEngineContext } from '@/components/EngineProvider';
 import { CYCLE_SEC, HISTORY_SEC, TAKER_FEE_RATE } from '@/lib/config';
+import { strategyDef } from '@/lib/strategies';
 import { CycleChart } from '@/components/Charts';
 import { Settings } from '@/components/Settings';
 import { clock, cx, pct, signed, time, usd } from '@/lib/format';
-import type { Position } from '@/lib/types';
+import type { Position, StrategyId } from '@/lib/types';
 
-export default function App() {
-  const v = useEngine();
-  const { snapshot: s, config, health } = v;
+export function StrategyDashboard({ strategyId }: { strategyId: StrategyId }) {
+  const s = useBot(strategyId);
+  const v = useEngineContext();
+  const def = strategyDef(strategyId);
+  const config = s.config;
   const [showSettings, setShowSettings] = useState(false);
   const [showLog, setShowLog] = useState(false);
 
@@ -22,57 +26,21 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  if (v.needsToken) return <TokenGate onSubmit={v.setToken} />;
-
   const distance = s.price !== null && s.cycleStartPrice !== null ? s.price - s.cycleStartPrice : null;
   const secondsToRoll = s.elapsedSec !== null ? Math.max(0, CYCLE_SEC - s.elapsedSec) : null;
   const signalNow = s.tailProb !== null && s.tailProb < config.unlikeliness;
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-[880px] flex-col gap-4 px-4 pb-16 pt-5">
-      {/* ── Bar ─────────────────────────────────────────────── */}
-      <header className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2.5">
-          <span className="grid h-7 w-7 place-items-center rounded-lg bg-[var(--accent)] text-[13px] font-bold text-white">
-            V
-          </span>
-          <span className="text-[15px] font-semibold tracking-tight">Vision</span>
-          <span className="rounded-md bg-[var(--accent-bg)] px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-[var(--accent)]">
-            Paper
-          </span>
+    <>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-base font-semibold">{def.name}</h1>
+          <p className="text-xs text-[var(--muted)]">{def.blurb}</p>
         </div>
-
-        <span className="flex items-center gap-1.5 text-xs text-[var(--muted)]" title="Binance's live trade stream">
-          <span
-            className={cx(
-              'h-1.5 w-1.5 rounded-full',
-              s.connected ? 'bg-[var(--up)]' : s.running ? 'bg-[var(--warn)]' : 'bg-[var(--line)]'
-            )}
-          />
-          Binance {s.connected ? 'live' : s.running ? 'connecting' : 'offline'}
-        </span>
-
-        <div className="ml-auto flex items-center gap-2">
-          <button className="btn" onClick={() => setShowSettings(true)}>
-            Settings
-          </button>
-          {s.running ? (
-            <button className="btn" onClick={v.stop}>
-              Stop
-            </button>
-          ) : (
-            <button className="btn btn-primary" onClick={v.start} disabled={config.killSwitch}>
-              Start
-            </button>
-          )}
-          <button
-            className={cx('btn', config.killSwitch ? 'btn-warn' : 'btn-danger')}
-            onClick={() => void v.kill(!config.killSwitch)}
-          >
-            {config.killSwitch ? 'Reset stop' : 'Stop all'}
-          </button>
-        </div>
-      </header>
+        <button className="btn shrink-0" onClick={() => setShowSettings(true)}>
+          Settings
+        </button>
+      </div>
 
       {v.error ? <Banner tone="down">Can’t reach the server: {v.error}</Banner> : null}
       {s.feedError ? <Banner tone="warn">Price feed: {s.feedError}</Banner> : null}
@@ -135,8 +103,7 @@ export default function App() {
             Press <strong className="text-[var(--text)]">Start</strong> and every {CYCLE_SEC} seconds it takes the
             live Binance price as a fresh reference, simulates 10,000 random paths forward from it using the
             realised volatility of the last {HISTORY_SEC} one-second prices, and watches whether the actual price
-            strays further than the simulation thinks is likely. When it does, that's the signal — buy or sell,
-            betting on reversion to more probable levels, closed out before the cycle ends.
+            strays further than the simulation thinks is likely. {def.blurb}
           </p>
         )}
       </section>
@@ -182,7 +149,9 @@ export default function App() {
             ) : s.position ? (
               <Chip tone="up">In position — {s.position.direction}</Chip>
             ) : signalNow ? (
-              <Chip tone="up">Signal found — {s.price !== null && s.cycleStartPrice !== null && s.price > s.cycleStartPrice ? 'selling (SHORT)' : 'buying (LONG)'}</Chip>
+              <Chip tone="up">
+                Signal found — {s.price !== null && s.cycleStartPrice !== null && s.price > s.cycleStartPrice ? 'selling (SHORT)' : 'buying (LONG)'}
+              </Chip>
             ) : (
               <Chip tone="muted">{s.skipReason ?? 'Watching'}</Chip>
             )}
@@ -285,22 +254,21 @@ export default function App() {
 
       <p className="px-1 text-center text-xs leading-relaxed text-[var(--muted)]">
         Every {CYCLE_SEC} seconds, a fresh driftless Monte Carlo simulates 10,000 paths from the live Binance price,
-        using the realised volatility of the last {HISTORY_SEC} one-second prices. When the actual price strays
-        further than the simulation gives much chance of, it bets on reversion — buying a dip, selling a spike —
-        closed out before the cycle ends. Paper trading only, fills walked against Binance's real order book. Not
+        shared by every bot. {def.blurb} Paper trading only, fills walked against Binance's real order book. Not
         financial advice.
       </p>
 
       {showSettings ? (
         <Settings
+          strategyName={def.name}
           config={config}
-          health={health}
-          onChange={v.update}
-          onReset={v.reset}
+          health={v.health}
+          onChange={(patch) => v.update(strategyId, patch)}
+          onReset={() => v.reset(strategyId)}
           onClose={() => setShowSettings(false)}
         />
       ) : null}
-    </main>
+    </>
   );
 }
 
@@ -314,7 +282,12 @@ function PositionRead({ position, price }: { position: Position; price: number |
       : null;
   return (
     <>
-      <div className={cx('num mt-1 text-2xl font-bold', position.direction === 'LONG' ? 'text-[var(--up)]' : 'text-[var(--down)]')}>
+      <div
+        className={cx(
+          'num mt-1 text-2xl font-bold',
+          position.direction === 'LONG' ? 'text-[var(--up)]' : 'text-[var(--down)]'
+        )}
+      >
         {position.direction}
       </div>
       <div className="mt-0.5 text-xs text-[var(--muted)]">
@@ -325,7 +298,7 @@ function PositionRead({ position, price }: { position: Position; price: number |
   );
 }
 
-function phaseLabel(s: ReturnType<typeof useEngine>['snapshot']): string {
+function phaseLabel(s: ReturnType<typeof useBot>): string {
   if (!s.running) return 'stopped';
   if (s.cycleStartPrice === null) return 'waiting for a price';
   if (s.busy === 'opening') return 'opening a position';
@@ -389,29 +362,5 @@ function Banner({ children, tone }: { children: React.ReactNode; tone: 'warn' | 
     >
       {children}
     </div>
-  );
-}
-
-function TokenGate({ onSubmit }: { onSubmit: (v: string) => void }) {
-  const [value, setValue] = useState('');
-  return (
-    <main className="grid min-h-screen place-items-center px-6">
-      <form
-        className="card w-full max-w-sm space-y-3 p-6"
-        onSubmit={(e) => {
-          e.preventDefault();
-          onSubmit(value.trim());
-        }}
-      >
-        <h1 className="text-base font-semibold">Enter access token</h1>
-        <p className="text-xs text-[var(--muted)]">
-          This deployment is protected. The token stays in this tab and is sent as a header.
-        </p>
-        <input type="password" className="input" autoFocus value={value} onChange={(e) => setValue(e.target.value)} />
-        <button type="submit" className="btn btn-primary w-full justify-center py-2">
-          Unlock
-        </button>
-      </form>
-    </main>
   );
 }

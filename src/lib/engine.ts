@@ -1,5 +1,6 @@
-import type { Config, CycleRecord, Direction, LogLine, Position, Stats, Tick } from './types';
+import type { Config, CycleRecord, Direction, LogLine, Position, Stats, StrategyId, Tick } from './types';
 import { CYCLE_SEC, DEFAULT_CONFIG, FUTURES_REST, HISTORY_SEC, PATHS, SYMBOL, TAKER_FEE_RATE } from './config';
+import { STRATEGIES, directionFor } from './strategies';
 import { volatility } from './series';
 import { bandFromDistribution, simulateCycle, tailProbability, type Band, type CycleDistribution } from './montecarlo';
 import { fetchBookForFill, fillQty, fillUsd, symbolFilters } from './binanceBook';
@@ -8,22 +9,30 @@ import { BinanceFeed } from './binanceFeed';
 /**
  * ── The loop ─────────────────────────────────────────────────────────────────
  *
- * One instance runs the whole session. There is one price source — Binance's
- * live trade stream — and one model: a driftless Monte Carlo re-run every
- * `CYCLE_SEC` seconds, simulating the full path distribution forward from
- * whatever the price is at that instant.
+ * One instance runs the whole session, for every strategy at once. There is
+ * one shared price source — Binance's live trade stream — and one shared
+ * model: a driftless Monte Carlo re-run every `CYCLE_SEC` seconds, simulating
+ * the full path distribution forward from whatever the price is at that
+ * instant. That much is identical for every strategy; duplicating it per bot
+ * would just be the same simulation run twice for no reason.
+ *
+ * What each strategy actually owns is its own config, its own position and
+ * P&L, and one decision: which way to bet once the live price gets more
+ * unlikely (versus the shared simulation) than its own threshold. That
+ * decision — `directionFor()` in strategies.ts — is the entire difference
+ * between them.
  *
  *   1. Every 20-second slot of the wall clock (:00, :20, :40…), take the
  *      price right now as the cycle's reference and simulate `PATHS` random
  *      walks forward, one second at a time, using the realised volatility of
  *      the last `HISTORY_SEC` one-second price points.
- *   2. For the rest of the cycle, check the live price against what the
- *      simulation says is plausible at that exact second. When it's less
- *      likely than the configured threshold, that's the signal: the price
- *      has strayed further than the model expects, so bet on it reverting —
- *      buy if it dipped unusually low, sell if it spiked unusually high.
- *   3. Force-close whatever's open at the configured second, before the next
- *      cycle begins. At most one position open at a time.
+ *   2. For the rest of the cycle, each bot independently checks the live
+ *      price against what the simulation says is plausible at that exact
+ *      second. When it's less likely than that bot's own threshold, that's
+ *      its signal.
+ *   3. Force-close whatever's open at each bot's own configured second,
+ *      before the next cycle begins. At most one position open at a time,
+ *      per bot.
  *
  * Every fill — open and close — is priced by walking Binance's real resting
  * depth, so paper trading reports the same slippage a live order would see.
@@ -31,9 +40,9 @@ import { BinanceFeed } from './binanceFeed';
 
 export type Busy = 'opening' | 'closing' | null;
 
-export interface Snapshot {
+/** What every strategy shares: the market itself, not any one bot's decisions. */
+export interface MarketSnapshot {
   running: boolean;
-  config: Config;
   connected: boolean;
   feedError: string | null;
   price: number | null;
@@ -44,8 +53,13 @@ export interface Snapshot {
   cycleEnd: number | null;
   cycleStartPrice: number | null;
   elapsedSec: number | null;
-  band: Band[] | null;
   tailProb: number | null;
+}
+
+export interface BotSnapshot extends MarketSnapshot {
+  strategyId: StrategyId;
+  config: Config;
+  band: Band[] | null;
   skipReason: string | null;
   busy: Busy;
   position: Position | null;
@@ -59,9 +73,35 @@ const CYCLE_MS = CYCLE_SEC * 1000;
 const MAX_TICKS = 2400;
 const MAX_SECONDS = HISTORY_SEC * 3;
 const MAX_LOGS = 200;
+const STRATEGY_IDS = STRATEGIES.map((s) => s.id);
+
+interface Bot {
+  config: Config;
+  skipReason: string | null;
+  busy: Busy;
+  position: Position | null;
+  positions: Position[];
+  cycles: CycleRecord[];
+  logs: LogLine[];
+  pendingPositions: Map<string, Position>;
+  pendingCycles: Map<string, CycleRecord>;
+}
+
+function freshBot(): Bot {
+  return {
+    config: { ...DEFAULT_CONFIG },
+    skipReason: null,
+    busy: null,
+    position: null,
+    positions: [],
+    cycles: [],
+    logs: [],
+    pendingPositions: new Map(),
+    pendingCycles: new Map(),
+  };
+}
 
 export class Engine {
-  private config: Config = { ...DEFAULT_CONFIG };
   private running = false;
 
   private ticks: Tick[] = [];
@@ -76,26 +116,21 @@ export class Engine {
   private cycleStart: number | null = null;
   private cycleStartPrice: number | null = null;
   private dist: CycleDistribution | null = null;
-  private band: Band[] | null = null;
   private tailProb: number | null = null;
-  private skipReason: string | null = null;
+  /** Market-level events — feed status, cycle rolls — shared into every bot's Activity log. */
+  private marketLogs: LogLine[] = [];
 
-  private position: Position | null = null;
-  private busy: Busy = null;
-
-  private positions: Position[] = [];
-  private cycles: CycleRecord[] = [];
-  private logs: LogLine[] = [];
+  private bots: Record<StrategyId, Bot>;
 
   private readonly feed: BinanceFeed;
   private timers: ReturnType<typeof setInterval>[] = [];
   private listeners = new Set<() => void>();
-  private snapshot: Snapshot | null = null;
+  private snapshots = new Map<StrategyId, BotSnapshot>();
   private queued = false;
   private seed = 1;
-  private pending = { positions: new Map<string, Position>(), cycles: new Map<string, CycleRecord>() };
 
   constructor(private headers: () => Record<string, string>) {
+    this.bots = Object.fromEntries(STRATEGY_IDS.map((id) => [id, freshBot()])) as Record<StrategyId, Bot>;
     this.feed = new BinanceFeed({
       onTick: (tick) => {
         this.ingestTick(tick);
@@ -111,12 +146,8 @@ export class Engine {
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-  async start(config: Config): Promise<void> {
-    if (this.running) {
-      this.config = { ...config };
-      return;
-    }
-    this.config = { ...config };
+  async start(): Promise<void> {
+    if (this.running) return;
     this.running = true;
     this.ticks = [];
     this.seconds = [];
@@ -124,7 +155,6 @@ export class Engine {
     this.cycleStart = null;
     this.cycleStartPrice = null;
     this.dist = null;
-    this.band = null;
     this.tailProb = null;
     this.log(
       'info',
@@ -147,27 +177,36 @@ export class Engine {
     this.feed.stop();
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
-    if (this.position && this.busy !== 'closing') void this.closePosition('stopped');
+    for (const id of STRATEGY_IDS) {
+      const bot = this.bots[id];
+      if (bot.position && bot.busy !== 'closing') void this.closePosition(id, 'stopped');
+    }
     void this.flush();
     this.log('info', 'Stopped');
     this.emit();
   }
 
-  setConfig(config: Config): void {
-    this.config = { ...config };
+  setConfig(strategyId: StrategyId, config: Config): void {
+    const bot = this.bots[strategyId];
+    const justKilled = config.killSwitch && !bot.config.killSwitch;
+    bot.config = { ...config };
+    // Engaging this one bot's kill switch closes only its own position —
+    // every other bot, and the shared feed, keeps running regardless.
+    if (justKilled && bot.position && bot.busy !== 'closing') void this.closePosition(strategyId, 'kill switch');
     this.emit();
   }
 
-  hydrate(r: { positions?: Position[]; cycles?: CycleRecord[] }): void {
+  hydrate(strategyId: StrategyId, r: { positions?: Position[]; cycles?: CycleRecord[] }): void {
+    const bot = this.bots[strategyId];
     if (r.positions?.length) {
-      const m = new Map(this.positions.map((p) => [p.id, p]));
+      const m = new Map(bot.positions.map((p) => [p.id, p]));
       for (const p of r.positions) if (!m.has(p.id)) m.set(p.id, p);
-      this.positions = [...m.values()].sort((a, b) => a.openedAt - b.openedAt);
+      bot.positions = [...m.values()].sort((a, b) => a.openedAt - b.openedAt);
     }
     if (r.cycles?.length) {
-      const m = new Map(this.cycles.map((c) => [c.id, c]));
+      const m = new Map(bot.cycles.map((c) => [c.id, c]));
       for (const c of r.cycles) if (!m.has(c.id)) m.set(c.id, c);
-      this.cycles = [...m.values()].sort((a, b) => a.startMs - b.startMs);
+      bot.cycles = [...m.values()].sort((a, b) => a.startMs - b.startMs);
     }
     this.emit();
   }
@@ -179,13 +218,17 @@ export class Engine {
     return () => this.listeners.delete(fn);
   };
 
-  getSnapshot = (): Snapshot => {
-    if (!this.snapshot) this.snapshot = this.build();
-    return this.snapshot;
+  getSnapshot = (strategyId: StrategyId): BotSnapshot => {
+    let snap = this.snapshots.get(strategyId);
+    if (!snap) {
+      snap = this.build(strategyId);
+      this.snapshots.set(strategyId, snap);
+    }
+    return snap;
   };
 
   private emit(now = false): void {
-    this.snapshot = null;
+    this.snapshots.clear();
     if (now) {
       for (const l of this.listeners) l();
       return;
@@ -194,16 +237,18 @@ export class Engine {
     this.queued = true;
     setTimeout(() => {
       this.queued = false;
-      this.snapshot = null;
+      this.snapshots.clear();
       for (const l of this.listeners) l();
     }, 150);
   }
 
-  private build(): Snapshot {
+  private build(strategyId: StrategyId): BotSnapshot {
     const now = Date.now();
+    const bot = this.bots[strategyId];
     return {
+      strategyId,
       running: this.running,
-      config: this.config,
+      config: bot.config,
       connected: this.connected || (this.price !== null && now - this.priceAt < 10_000),
       feedError: this.feedError,
       price: this.price,
@@ -214,15 +259,15 @@ export class Engine {
       cycleEnd: this.cycleStart !== null ? this.cycleStart + CYCLE_MS : null,
       cycleStartPrice: this.cycleStartPrice,
       elapsedSec: this.cycleStart !== null ? (now - this.cycleStart) / 1000 : null,
-      band: this.band,
+      band: this.dist ? bandFromDistribution(this.dist, bot.config.unlikeliness) : null,
       tailProb: this.tailProb,
-      skipReason: this.skipReason,
-      busy: this.busy,
-      position: this.position,
-      positions: this.positions,
-      cycles: this.cycles,
-      logs: this.logs,
-      stats: this.stats(),
+      skipReason: bot.skipReason,
+      busy: bot.busy,
+      position: bot.position,
+      positions: bot.positions,
+      cycles: bot.cycles,
+      logs: mergeLogs(this.marketLogs, bot.logs),
+      stats: this.stats(strategyId),
     };
   }
 
@@ -286,43 +331,49 @@ export class Engine {
 
     if (this.dist && this.cycleStartPrice !== null && this.price !== null) {
       this.tailProb = tailProbability(this.dist, elapsedSec, this.cycleStartPrice, this.price);
-      this.considerTrade(elapsedSec);
+      for (const id of STRATEGY_IDS) this.considerTrade(id, elapsedSec);
     }
 
-    if (this.position && elapsedSec >= this.config.closeAtSecond && this.busy !== 'closing') {
-      void this.closePosition('cycle close');
+    for (const id of STRATEGY_IDS) {
+      const bot = this.bots[id];
+      if (bot.position && elapsedSec >= bot.config.closeAtSecond && bot.busy !== 'closing') {
+        void this.closePosition(id, 'cycle close');
+      }
     }
   }
 
-  /** Finalise the cycle just ended (if any), then simulate the new one from the price right now. */
+  /** Finalise the cycle just ended (if any), for every bot, then simulate the new one from the price right now. */
   private rollCycle(boundary: number): void {
     if (this.cycleStart !== null && this.cycleStartPrice !== null) {
       const cycleId = String(this.cycleStart);
-      const done = this.positions.filter((p) => p.cycleId === cycleId);
-      const record: CycleRecord = {
-        id: cycleId,
-        startMs: this.cycleStart,
-        endMs: this.cycleStart + CYCLE_MS,
-        startPrice: this.cycleStartPrice,
-        sigma: this.vol.sigma,
-        volPct: this.vol.volPct,
-        traded: done.length > 0,
-        pnl: done.length > 0 ? done.reduce((s, p) => s + (p.pnl ?? 0), 0) : null,
-      };
-      if (!this.cycles.some((c) => c.id === record.id)) {
-        this.cycles = [...this.cycles, record].slice(-500);
-        this.pending.cycles.set(record.id, record);
+      for (const id of STRATEGY_IDS) {
+        const bot = this.bots[id];
+        const done = bot.positions.filter((p) => p.cycleId === cycleId);
+        const record: CycleRecord = {
+          id: cycleId,
+          strategyId: id,
+          startMs: this.cycleStart,
+          endMs: this.cycleStart + CYCLE_MS,
+          startPrice: this.cycleStartPrice,
+          sigma: this.vol.sigma,
+          volPct: this.vol.volPct,
+          traded: done.length > 0,
+          pnl: done.length > 0 ? done.reduce((s, p) => s + (p.pnl ?? 0), 0) : null,
+        };
+        if (!bot.cycles.some((c) => c.id === record.id)) {
+          bot.cycles = [...bot.cycles, record].slice(-500);
+          bot.pendingCycles.set(record.id, record);
+        }
       }
     }
 
     this.cycleStart = boundary;
     this.cycleStartPrice = this.price;
     this.tailProb = null;
-    this.skipReason = null;
+    for (const id of STRATEGY_IDS) this.bots[id].skipReason = null;
 
     if (this.cycleStartPrice === null) {
       this.dist = null;
-      this.band = null;
       this.log('warn', 'New cycle — no price yet, sitting this one out');
       return;
     }
@@ -334,7 +385,6 @@ export class Engine {
       paths: PATHS,
       seed: this.seed++,
     });
-    this.band = bandFromDistribution(this.dist, this.config.unlikeliness);
     this.log(
       'info',
       `Cycle started at $${this.cycleStartPrice.toFixed(2)} — ${this.vol.volPct.toFixed(0)}% volatility`
@@ -342,78 +392,83 @@ export class Engine {
   }
 
   /**
-   * The whole trading rule. When the live price is further from the cycle's
-   * start than the model gives more than `unlikeliness` chance of, bet on
-   * reversion: buy if it dipped low, sell if it spiked high.
+   * Each bot's whole trading rule. When the live price is further from the
+   * cycle's start than this bot's own threshold gives much chance of, take
+   * this bot's own side of that — see strategies.ts's `directionFor`.
    */
-  private considerTrade(elapsedSec: number): void {
-    if (this.position || this.busy) return;
-    if (this.config.killSwitch) {
-      this.skipReason = 'kill switch on';
+  private considerTrade(strategyId: StrategyId, elapsedSec: number): void {
+    const bot = this.bots[strategyId];
+    if (bot.position || bot.busy) return;
+    if (bot.config.killSwitch) {
+      bot.skipReason = 'kill switch on';
       return;
     }
-    if (!this.config.autoTrade) {
-      this.skipReason = 'auto-trade off';
+    if (!bot.config.autoTrade) {
+      bot.skipReason = 'auto-trade off';
       return;
     }
-    if (elapsedSec >= this.config.closeAtSecond) {
-      this.skipReason = 'too late in this cycle';
+    if (elapsedSec >= bot.config.closeAtSecond) {
+      bot.skipReason = 'too late in this cycle';
       return;
     }
     if (this.tailProb === null || this.cycleStartPrice === null || this.price === null) return;
-    if (this.tailProb >= this.config.unlikeliness) {
-      this.skipReason = `${(this.tailProb * 100).toFixed(1)}% still plausible`;
+    if (this.tailProb >= bot.config.unlikeliness) {
+      bot.skipReason = `${(this.tailProb * 100).toFixed(1)}% still plausible`;
       return;
     }
-    this.skipReason = null;
-    const direction: Direction = this.price > this.cycleStartPrice ? 'SHORT' : 'LONG';
-    void this.openPosition(direction, this.tailProb);
+    bot.skipReason = null;
+    const direction = directionFor(strategyId, this.price > this.cycleStartPrice);
+    void this.openPosition(strategyId, direction, this.tailProb);
   }
 
-  private async openPosition(direction: Direction, triggerProb: number): Promise<void> {
-    if (this.busy || this.cycleStart === null) return;
-    this.busy = 'opening';
+  private async openPosition(strategyId: StrategyId, direction: Direction, triggerProb: number): Promise<void> {
+    const bot = this.bots[strategyId];
+    if (bot.busy || this.cycleStart === null) return;
+    bot.busy = 'opening';
     this.emit(true);
     try {
       const [book, filters] = await Promise.all([fetchBookForFill(), symbolFilters()]);
-      const f = fillUsd(book, direction === 'LONG' ? 'BUY' : 'SELL', this.config.stakeUsd, filters?.stepSize);
+      const f = fillUsd(book, direction === 'LONG' ? 'BUY' : 'SELL', bot.config.stakeUsd, filters?.stepSize);
       if (f.qty <= 0) {
-        this.log('warn', 'No liquidity for a simulated fill');
+        this.botLog(strategyId, 'warn', 'No liquidity for a simulated fill');
         return;
       }
       const position: Position = {
-        id: `pos-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        id: `pos-${strategyId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        strategyId,
         cycleId: String(this.cycleStart),
         direction,
         qty: f.qty,
         openedAt: Date.now(),
         openPrice: f.price,
         triggerProb,
-        closesAt: this.cycleStart + this.config.closeAtSecond * 1000,
+        closesAt: this.cycleStart + bot.config.closeAtSecond * 1000,
         status: 'OPEN',
         closedAt: null,
         closePrice: null,
         pnl: null,
       };
-      this.position = position;
-      this.positions = [...this.positions, position];
-      this.pending.positions.set(position.id, position);
-      this.log(
+      bot.position = position;
+      bot.positions = [...bot.positions, position];
+      bot.pendingPositions.set(position.id, position);
+      this.botLog(
+        strategyId,
         'trade',
         `Opened ${direction} ${f.qty.toFixed(5)} BTC at $${f.price.toFixed(2)} — that move had only a ${(triggerProb * 100).toFixed(1)}% chance`
       );
     } catch (err) {
-      this.log('error', `Open failed: ${msg(err)}`);
+      this.botLog(strategyId, 'error', `Open failed: ${msg(err)}`);
     } finally {
-      this.busy = null;
+      bot.busy = null;
       this.emit(true);
     }
   }
 
-  private async closePosition(reason: string): Promise<void> {
-    const open = this.position;
-    if (!open || this.busy) return;
-    this.busy = 'closing';
+  private async closePosition(strategyId: StrategyId, reason: string): Promise<void> {
+    const bot = this.bots[strategyId];
+    const open = bot.position;
+    if (!open || bot.busy) return;
+    bot.busy = 'closing';
     this.emit(true);
     try {
       const [book, filters] = await Promise.all([fetchBookForFill(), symbolFilters()]);
@@ -429,74 +484,131 @@ export class Engine {
       const fees = (open.qty * open.openPrice + closedQty * closePrice) * TAKER_FEE_RATE;
       const pnl = gross - fees;
       const closed: Position = { ...open, status: 'CLOSED', closedAt: Date.now(), closePrice, pnl };
-      this.positions = this.positions.map((p) => (p.id === closed.id ? closed : p));
-      this.pending.positions.set(closed.id, closed);
-      this.position = null;
-      this.log(
+      bot.positions = bot.positions.map((p) => (p.id === closed.id ? closed : p));
+      bot.pendingPositions.set(closed.id, closed);
+      bot.position = null;
+      this.botLog(
+        strategyId,
         'trade',
         `${pnl >= 0 ? 'WON' : 'LOST'} — closed ${open.direction} at $${closePrice.toFixed(2)} (${reason}), ` +
           `${fees.toFixed(2)} in fees. ${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`
       );
     } catch (err) {
-      this.log('error', `Close failed: ${msg(err)}`);
+      this.botLog(strategyId, 'error', `Close failed: ${msg(err)}`);
     } finally {
-      this.busy = null;
+      bot.busy = null;
       this.emit(true);
     }
   }
 
   // ── Stats ─────────────────────────────────────────────────────────────────
 
-  private todayPnl(): number {
+  private todayPnl(strategyId: StrategyId): number {
     const dayStart = new Date().setHours(0, 0, 0, 0);
-    return this.positions
+    return this.bots[strategyId].positions
       .filter((p) => p.openedAt >= dayStart && p.pnl !== null)
       .reduce((s, p) => s + (p.pnl ?? 0), 0);
   }
 
-  private stats(): Stats {
-    const done = this.positions.filter((p) => p.status === 'CLOSED');
+  private stats(strategyId: StrategyId): Stats {
+    const bot = this.bots[strategyId];
+    const done = bot.positions.filter((p) => p.status === 'CLOSED');
     const wins = done.filter((p) => (p.pnl ?? 0) > 0).length;
     return {
-      positions: this.positions.length,
+      positions: bot.positions.length,
       wins,
       losses: done.length - wins,
-      open: this.position ? 1 : 0,
+      open: bot.position ? 1 : 0,
       winRate: done.length > 0 ? wins / done.length : 0,
       pnl: done.reduce((s, p) => s + (p.pnl ?? 0), 0),
-      today: this.todayPnl(),
-      cycles: this.cycles.length,
+      today: this.todayPnl(strategyId),
+      cycles: bot.cycles.length,
     };
   }
 
   // ── Persistence / logging ─────────────────────────────────────────────────
 
   private async flush(): Promise<void> {
-    if (this.pending.positions.size === 0 && this.pending.cycles.size === 0) return;
-    const body = {
-      positions: [...this.pending.positions.values()],
-      cycles: [...this.pending.cycles.values()],
-    };
-    this.pending.positions.clear();
-    this.pending.cycles.clear();
-    try {
-      await fetch('/api/state', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', ...this.headers() },
-        body: JSON.stringify(body),
-      });
-    } catch {
-      /* the record is an audit trail, not a dependency */
+    for (const id of STRATEGY_IDS) {
+      const bot = this.bots[id];
+      if (bot.pendingPositions.size === 0 && bot.pendingCycles.size === 0) continue;
+      const body = {
+        positions: [...bot.pendingPositions.values()],
+        cycles: [...bot.pendingCycles.values()],
+      };
+      bot.pendingPositions.clear();
+      bot.pendingCycles.clear();
+      try {
+        await fetch(`/api/state/${id}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...this.headers() },
+          body: JSON.stringify(body),
+        });
+      } catch {
+        /* the record is an audit trail, not a dependency */
+      }
     }
   }
 
+  /** Market-level: feed status, cycle rolls. Shared into every bot's Activity log. */
   log(level: LogLine['level'], message: string): void {
-    this.logs = [
-      ...this.logs,
-      { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, t: Date.now(), level, message },
-    ].slice(-MAX_LOGS);
+    this.marketLogs = [...this.marketLogs, newLine(level, message)].slice(-MAX_LOGS);
     this.emit();
   }
+
+  /** This bot's own decisions: opens, closes, and anything that stopped one from happening. */
+  private botLog(strategyId: StrategyId, level: LogLine['level'], message: string): void {
+    const bot = this.bots[strategyId];
+    bot.logs = [...bot.logs, newLine(level, message)].slice(-MAX_LOGS);
+    this.emit();
+  }
+}
+
+/** A placeholder snapshot for before the engine exists (server render) or before this bot has hydrated. */
+// One cached instance per strategy — useSyncExternalStore requires
+// getServerSnapshot to return a referentially stable value, and a fresh
+// object literal on every call breaks that (React warns of a possible
+// infinite loop otherwise).
+const EMPTY_SNAPSHOTS = new Map<StrategyId, BotSnapshot>();
+
+export function emptySnapshot(strategyId: StrategyId): BotSnapshot {
+  let snap = EMPTY_SNAPSHOTS.get(strategyId);
+  if (!snap) {
+    snap = {
+      strategyId,
+      running: false,
+      config: { ...DEFAULT_CONFIG },
+      connected: false,
+      feedError: null,
+      price: null,
+      priceAt: 0,
+      ticks: [],
+      volPct: null,
+      cycleStart: null,
+      cycleEnd: null,
+      cycleStartPrice: null,
+      elapsedSec: null,
+      band: null,
+      tailProb: null,
+      skipReason: null,
+      busy: null,
+      position: null,
+      positions: [],
+      cycles: [],
+      logs: [],
+      stats: { positions: 0, wins: 0, losses: 0, open: 0, winRate: 0, pnl: 0, today: 0, cycles: 0 },
+    };
+    EMPTY_SNAPSHOTS.set(strategyId, snap);
+  }
+  return snap;
+}
+
+function newLine(level: LogLine['level'], message: string): LogLine {
+  return { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, t: Date.now(), level, message };
+}
+
+function mergeLogs(market: LogLine[], bot: LogLine[]): LogLine[] {
+  return [...market, ...bot].sort((a, b) => a.t - b.t).slice(-MAX_LOGS);
 }
 
 function msg(e: unknown): string {
